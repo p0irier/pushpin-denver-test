@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Pushpin — Denver Test (Ski + MTB)</title>
+<title>Pushpin — Denver Test (Ski + MTB + Breweries)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
@@ -12,7 +12,7 @@
     --ink:#1c2b24; --paper:#eee7d6; --paper-dim:#e2d9c2;
     --pine:#20463c; --pine-deep:#123028; --ochre:#b9832e; --ochre-dim:#dcb877;
     --teal:#2c6e6a; --rust:#9c4a2c; --line:#c9bd9e; --white:#fdfbf4;
-    --ski:#1b6ca8; --mtb:#2e8b3d;
+    --ski:#1b6ca8; --mtb:#2e8b3d; --brewery:#d9822b;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;height:100%;overflow:hidden;}
@@ -45,7 +45,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><h1>Pushpin</h1><span>Denver test · ski + mtb</span></div>
+    <div class="brand"><h1>Pushpin</h1><span>Denver test · ski + mtb + breweries</span></div>
     <div class="meta" id="metaInfo">Loading…</div>
   </header>
   <main>
@@ -55,6 +55,7 @@
         <div class="chip-row">
           <div class="chip" data-cat="ski" style="color:var(--ski);border-color:var(--ski);">⛷️ Ski resorts</div>
           <div class="chip" data-cat="mtb" style="color:var(--mtb);border-color:var(--mtb);">🚵 MTB trails</div>
+          <div class="chip" data-cat="brewery" style="color:var(--brewery);border-color:var(--brewery);">🍺 Breweries</div>
         </div>
       </div>
       <div class="locations">
@@ -70,14 +71,16 @@
 (function(){
   let skiData = { resorts: [] };
   let mtbData = { trails: [] };
-  let activeCats = new Set(['ski','mtb']);
-  let map, skiLayer, mtbLayer;
+  let breweryData = { breweries: [] };
+  let activeCats = new Set(['ski','mtb','brewery']);
+  let map, skiLayer, mtbLayer, breweryLayer;
 
   function initMap(){
     map = L.map('map').setView([39.65, -105.7], 9);
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {attribution:'&copy; OpenStreetMap contributors', maxZoom:18}).addTo(map);
     skiLayer = L.layerGroup().addTo(map);
     mtbLayer = L.layerGroup().addTo(map);
+    breweryLayer = L.layerGroup().addTo(map);
   }
 
   function tierColor(tier){
@@ -111,6 +114,16 @@
     </div>`;
   }
 
+  function breweryCardHtml(b){
+    return `<div class="card" style="border-left-color:var(--brewery)" data-fly="${b.lat},${b.lng}">
+      <div class="name">🍺 ${b.name}</div>
+      <div class="stat-row">
+        <span>${b.breweryType || 'unknown type'}</span>
+      </div>
+      <div class="desc">${b.address || 'No address on file'}${b.website?` · <a href="${b.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+    </div>`;
+  }
+
   function render(){
     const cardList = document.getElementById('cardList');
     let html = '';
@@ -121,6 +134,10 @@
     if(activeCats.has('mtb')){
       if(mtbData.trails.length===0) html += `<div class="empty-note">No MTB data yet — run <b>npm run fetch:mtb</b> locally and redeploy.</div>`;
       else html += mtbData.trails.map(mtbCardHtml).join('');
+    }
+    if(activeCats.has('brewery')){
+      if(breweryData.breweries.length===0) html += `<div class="empty-note">No brewery data yet — run <b>npm run fetch:breweries</b> locally and redeploy.</div>`;
+      else html += breweryData.breweries.map(breweryCardHtml).join('');
     }
     cardList.innerHTML = html || `<div class="empty-note">No categories selected.</div>`;
     document.querySelectorAll('.card').forEach(c=>{
@@ -133,7 +150,7 @@
   }
 
   function renderMarkers(){
-    skiLayer.clearLayers(); mtbLayer.clearLayers();
+    skiLayer.clearLayers(); mtbLayer.clearLayers(); breweryLayer.clearLayers();
     const bounds = [];
     if(activeCats.has('ski')){
       skiData.resorts.forEach(r=>{
@@ -152,6 +169,14 @@
         latlngs.forEach(ll=>bounds.push(ll));
       });
     }
+    if(activeCats.has('brewery')){
+      breweryData.breweries.forEach(b=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--brewery);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([b.lat,b.lng],{icon}).addTo(breweryLayer);
+        m.bindPopup(`<b>🍺 ${b.name}</b><br>${b.breweryType || ''}<br>${b.address || ''}`);
+        bounds.push([b.lat,b.lng]);
+      });
+    }
     if(bounds.length) map.fitBounds(L.latLngBounds(bounds), {padding:[40,40]});
   }
 
@@ -166,19 +191,21 @@
 
   async function loadData(){
     try{
-      const [skiResp, mtbResp] = await Promise.all([
-        fetch('./data/ski-denver.json'), fetch('./data/mtb-denver.json')
+      const [skiResp, mtbResp, breweryResp] = await Promise.all([
+        fetch('./data/ski-denver.json'), fetch('./data/mtb-denver.json'), fetch('./data/breweries-denver.json')
       ]);
       skiData = await skiResp.json();
       mtbData = await mtbResp.json();
+      breweryData = await breweryResp.json();
     }catch(e){
       console.error('Failed to load data', e);
     }
     const metaBits = [];
     if(skiData.generatedAt) metaBits.push(`Ski data: ${new Date(skiData.generatedAt).toLocaleString()}`);
     if(mtbData.generatedAt) metaBits.push(`MTB data: ${new Date(mtbData.generatedAt).toLocaleString()}`);
+    if(breweryData.generatedAt) metaBits.push(`Brewery data: ${new Date(breweryData.generatedAt).toLocaleString()}`);
     document.getElementById('metaInfo').textContent = metaBits.length ? metaBits.join(' · ') : 'No data fetched yet — see sidebar notes';
-    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length})`;
+    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length})`;
     render();
   }
 

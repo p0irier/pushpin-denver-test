@@ -8,6 +8,7 @@
   "scripts": {
     "fetch:ski": "node scripts/fetch-ski.js",
     "fetch:mtb": "node scripts/fetch-mtb.js",
-    "fetch:all": "npm run fetch:ski && npm run fetch:mtb"
+    "fetch:breweries": "node scripts/fetch-breweries.js",
+    "fetch:all": "npm run fetch:ski && npm run fetch:mtb && npm run fetch:breweries"
   }
 }
