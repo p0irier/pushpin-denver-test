@@ -11,9 +11,11 @@
 // That's fine for manual testing. If this becomes the real per-trip pattern,
 // add caching (Vercel KV/Blob) keyed by region before relying on it at scale.
 
+// FIXED: same bug as MTB — was reusing the wide ski-corridor bbox instead of
+// a dense-local-trail-system box. Now centered on Trondheim, metro-scale.
 const REGIONS = {
   denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
-  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+  norway: { south: 63.2805, west: 10.0951, north: 63.5805, east: 10.6951 }
 };
 const MIN_TRAIL_MILES = 3;
 

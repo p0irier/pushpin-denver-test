@@ -6,9 +6,16 @@
 // covers the Oppdal -> Trondheim -> Røros corridor (the actual test-case
 // trip route from the travel-activity-profile).
 
+// FIXED: was reusing the wide ski-corridor bbox (built for spread-out
+// resorts), which is ~15-20x the AREA of Denver's tight metro box — that
+// mismatch alone explains why Norway returned 2,200+ raw MTB segments vs
+// Denver's few hundred. MTB/hiking need a dense LOCAL trail-system box, not
+// a whole-trip-corridor box. Centered on Trondheim (the corridor's actual
+// city, most likely to have real mapped trail infrastructure), sized
+// comparably to Denver's metro box.
 const REGIONS = {
   denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
-  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+  norway: { south: 63.2805, west: 10.0951, north: 63.5805, east: 10.6951 }
 };
 
 const SCALE_TO_IMBA_BUCKET = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 3, 5: 4, 6: 4 };
@@ -108,35 +115,61 @@ async function fetchTrails(bbox) {
   );
   if (ways.length === 0) return [];
 
-  // v2 clustering: exact shared-node-ID matching (v1) barely merged anything
-  // in testing — real-world OSM trail data is often NOT perfectly snapped
-  // between segments mapped by different contributors at different times,
-  // even when they're visually the same physical trail. Switched to
-  // PROXIMITY matching instead: two ways are considered connected if any of
-  // their endpoints are within CONNECT_TOLERANCE_METERS of each other. More
-  // forgiving of imperfect topology, at the cost of a small risk of merging
-  // trails that just happen to pass close to each other without truly
-  // connecting (e.g. a switchback near a parallel trail).
-  const CONNECT_TOLERANCE_METERS = 25;
+  // v3 clustering: v2 only checked endpoint-to-endpoint proximity, which
+  // misses T-junctions — a very common real case where a spur trail's end
+  // meets the MIDDLE of a longer trail, not its tip. That connection was
+  // never being detected, which is the likely main reason real trail
+  // networks were still splitting into many small clusters.
+  //
+  // Fix: check each way's two endpoints against EVERY point of every other
+  // way, not just other ways' endpoints. Doing this brute-force (O(n^2 *
+  // points-per-way)) would be far too slow at scale (Norway alone returned
+  // 2,200+ raw segments) — so points are bucketed into a spatial grid first,
+  // and each endpoint only checks nearby grid cells instead of every point
+  // in the dataset.
+  const CONNECT_TOLERANCE_METERS = 40; // widened from 25m — real-world gaps (unmapped connectors, parking lot crossings) can exceed a tight tolerance even when it's clearly the same network
+  const GRID_DEG = 0.0006; // ~50-65m cells depending on latitude, coarser than the tolerance so neighboring-cell checks reliably catch it
 
-  const endpoints = ways.map(w => ({
-    start: w.geometry[0],
-    end: w.geometry[w.geometry.length - 1]
-  }));
+  function cellKey(lat, lon) {
+    return `${Math.floor(lat / GRID_DEG)},${Math.floor(lon / GRID_DEG)}`;
+  }
+
+  // Bucket every point of every way into the grid, tagged with which way it belongs to.
+  const grid = new Map();
+  ways.forEach((w, wayIdx) => {
+    w.geometry.forEach(pt => {
+      const key = cellKey(pt.lat, pt.lon);
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push({ wayIdx, lat: pt.lat, lon: pt.lon });
+    });
+  });
+
+  function nearbyCandidates(lat, lon) {
+    const baseLat = Math.floor(lat / GRID_DEG);
+    const baseLon = Math.floor(lon / GRID_DEG);
+    const results = [];
+    for (let dLat = -1; dLat <= 1; dLat++) {
+      for (let dLon = -1; dLon <= 1; dLon++) {
+        const key = `${baseLat + dLat},${baseLon + dLon}`;
+        if (grid.has(key)) results.push(...grid.get(key));
+      }
+    }
+    return results;
+  }
 
   const uf = makeUnionFind(ways.length);
-  for (let i = 0; i < ways.length; i++) {
-    for (let j = i + 1; j < ways.length; j++) {
-      const pairs = [
-        [endpoints[i].start, endpoints[j].start],
-        [endpoints[i].start, endpoints[j].end],
-        [endpoints[i].end, endpoints[j].start],
-        [endpoints[i].end, endpoints[j].end]
-      ];
-      const connected = pairs.some(([a, b]) => haversineMeters(a, b) <= CONNECT_TOLERANCE_METERS);
-      if (connected) uf.union(i, j);
-    }
-  }
+  ways.forEach((w, wayIdx) => {
+    const endpoints = [w.geometry[0], w.geometry[w.geometry.length - 1]];
+    endpoints.forEach(ep => {
+      const candidates = nearbyCandidates(ep.lat, ep.lon);
+      candidates.forEach(c => {
+        if (c.wayIdx === wayIdx) return; // don't compare a way against itself
+        if (haversineMeters(ep, c) <= CONNECT_TOLERANCE_METERS) {
+          uf.union(wayIdx, c.wayIdx);
+        }
+      });
+    });
+  });
 
   // Group way indices by cluster root.
   const clusters = {};
@@ -191,7 +224,16 @@ async function fetchTrails(bbox) {
         : `Singletrack network, difficulty unrated, ${totalMiles} mi total`
     });
   }
-  return trails;
+
+  // Smarter than a blunt "5+ miles only" cutoff, which would punish real
+  // small trail networks just as hard as genuine junk. Instead: drop only
+  // ISOLATED stubs — clusters made of a single segment AND short. A short
+  // cluster that's made of MULTIPLE connected segments is more likely a
+  // real (if small) trail network, and gets kept regardless of length.
+  const ISOLATED_STUB_MAX_MILES = 0.5;
+  const filtered = trails.filter(t => !(t.segmentCount === 1 && t.distanceMiles < ISOLATED_STUB_MAX_MILES));
+
+  return filtered;
 }
 
 module.exports = async (req, res) => {
