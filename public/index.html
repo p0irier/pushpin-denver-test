@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Pushpin — Denver Test (Ski + MTB + Breweries)</title>
+<title>Pushpin — Denver Test (Ski + MTB + Breweries + Hiking)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
@@ -12,7 +12,7 @@
     --ink:#1c2b24; --paper:#eee7d6; --paper-dim:#e2d9c2;
     --pine:#20463c; --pine-deep:#123028; --ochre:#b9832e; --ochre-dim:#dcb877;
     --teal:#2c6e6a; --rust:#9c4a2c; --line:#c9bd9e; --white:#fdfbf4;
-    --ski:#1b6ca8; --mtb:#2e8b3d; --brewery:#d9822b;
+    --ski:#1b6ca8; --mtb:#2e8b3d; --brewery:#d9822b; --hiking:#7a5195;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;height:100%;overflow:hidden;}
@@ -45,7 +45,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><h1>Pushpin</h1><span>Denver test · ski + mtb + breweries</span></div>
+    <div class="brand"><h1>Pushpin</h1><span>Denver test · ski + mtb + breweries + hiking</span></div>
     <div class="meta" id="metaInfo">Loading…</div>
   </header>
   <main>
@@ -56,6 +56,7 @@
           <div class="chip" data-cat="ski" style="color:var(--ski);border-color:var(--ski);">⛷️ Ski resorts</div>
           <div class="chip" data-cat="mtb" style="color:var(--mtb);border-color:var(--mtb);">🚵 MTB trails</div>
           <div class="chip" data-cat="brewery" style="color:var(--brewery);border-color:var(--brewery);">🍺 Breweries</div>
+          <div class="chip" data-cat="hiking" style="color:var(--hiking);border-color:var(--hiking);">🥾 Hiking</div>
         </div>
       </div>
       <div class="locations">
@@ -72,8 +73,9 @@
   let skiData = { resorts: [] };
   let mtbData = { trails: [] };
   let breweryData = { breweries: [] };
-  let activeCats = new Set(['ski','mtb','brewery']);
-  let map, skiLayer, mtbLayer, breweryLayer;
+  let hikingData = { trails: [] };
+  let activeCats = new Set(['ski','mtb','brewery','hiking']);
+  let map, skiLayer, mtbLayer, breweryLayer, hikingLayer;
 
   function initMap(){
     map = L.map('map').setView([39.65, -105.7], 9);
@@ -81,6 +83,7 @@
     skiLayer = L.layerGroup().addTo(map);
     mtbLayer = L.layerGroup().addTo(map);
     breweryLayer = L.layerGroup().addTo(map);
+    hikingLayer = L.layerGroup().addTo(map);
   }
 
   function tierColor(tier){
@@ -124,6 +127,18 @@
     </div>`;
   }
 
+  function hikingCardHtml(t){
+    const flyPt = t.geometry[0];
+    return `<div class="card" style="border-left-color:var(--hiking)" data-fly="${flyPt.lat},${flyPt.lon}">
+      <div class="name">🥾 ${t.name}</div>
+      <div class="stat-row">
+        <span>${t.sacScale || 'Difficulty not tagged'}</span>
+        <span>${t.distanceMiles} mi</span>
+      </div>
+      <div class="desc">${t.description}</div>
+    </div>`;
+  }
+
   function render(){
     const cardList = document.getElementById('cardList');
     let html = '';
@@ -139,6 +154,10 @@
       if(breweryData.breweries.length===0) html += `<div class="empty-note">No brewery data yet — run <b>npm run fetch:breweries</b> locally and redeploy.</div>`;
       else html += breweryData.breweries.map(breweryCardHtml).join('');
     }
+    if(activeCats.has('hiking')){
+      if(hikingData.trails.length===0) html += `<div class="empty-note">No hiking data yet — run <b>npm run fetch:hiking</b> locally and redeploy.</div>`;
+      else html += hikingData.trails.map(hikingCardHtml).join('');
+    }
     cardList.innerHTML = html || `<div class="empty-note">No categories selected.</div>`;
     document.querySelectorAll('.card').forEach(c=>{
       c.addEventListener('click', ()=>{
@@ -150,7 +169,7 @@
   }
 
   function renderMarkers(){
-    skiLayer.clearLayers(); mtbLayer.clearLayers(); breweryLayer.clearLayers();
+    skiLayer.clearLayers(); mtbLayer.clearLayers(); breweryLayer.clearLayers(); hikingLayer.clearLayers();
     const bounds = [];
     if(activeCats.has('ski')){
       skiData.resorts.forEach(r=>{
@@ -177,6 +196,14 @@
         bounds.push([b.lat,b.lng]);
       });
     }
+    if(activeCats.has('hiking')){
+      hikingData.trails.forEach(t=>{
+        const latlngs = t.geometry.map(p=>[p.lat,p.lon]);
+        const line = L.polyline(latlngs, {color:'#7a5195', weight:4, opacity:0.85}).addTo(hikingLayer);
+        line.bindPopup(`<b>🥾 ${t.name}</b><br>${t.sacScale || 'Difficulty not tagged'} · ${t.distanceMiles} mi`);
+        latlngs.forEach(ll=>bounds.push(ll));
+      });
+    }
     if(bounds.length) map.fitBounds(L.latLngBounds(bounds), {padding:[40,40]});
   }
 
@@ -191,12 +218,13 @@
 
   async function loadData(){
     try{
-      const [skiResp, mtbResp, breweryResp] = await Promise.all([
-        fetch('./data/ski-denver.json'), fetch('./data/mtb-denver.json'), fetch('./data/breweries-denver.json')
+      const [skiResp, mtbResp, breweryResp, hikingResp] = await Promise.all([
+        fetch('./data/ski-denver.json'), fetch('./data/mtb-denver.json'), fetch('./data/breweries-denver.json'), fetch('./data/hiking-denver.json')
       ]);
       skiData = await skiResp.json();
       mtbData = await mtbResp.json();
       breweryData = await breweryResp.json();
+      hikingData = await hikingResp.json();
     }catch(e){
       console.error('Failed to load data', e);
     }
@@ -204,8 +232,9 @@
     if(skiData.generatedAt) metaBits.push(`Ski data: ${new Date(skiData.generatedAt).toLocaleString()}`);
     if(mtbData.generatedAt) metaBits.push(`MTB data: ${new Date(mtbData.generatedAt).toLocaleString()}`);
     if(breweryData.generatedAt) metaBits.push(`Brewery data: ${new Date(breweryData.generatedAt).toLocaleString()}`);
+    if(hikingData.generatedAt) metaBits.push(`Hiking data: ${new Date(hikingData.generatedAt).toLocaleString()}`);
     document.getElementById('metaInfo').textContent = metaBits.length ? metaBits.join(' · ') : 'No data fetched yet — see sidebar notes';
-    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length})`;
+    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
     render();
   }
 
