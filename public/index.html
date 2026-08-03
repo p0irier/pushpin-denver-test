@@ -267,34 +267,47 @@
     }
   }
 
-  document.getElementById('refreshAllBtn').addEventListener('click', async ()=>{
+  document.getElementById('refreshAllBtn').addEventListener('click', ()=>{
     const btn = document.getElementById('refreshAllBtn');
     const statusEl = document.getElementById('loadTestStatus');
+    const cats = ['ski','mtb','brewery','hiking'];
     btn.disabled = true;
     btn.textContent = '⚡ Firing all 4 concurrently...';
-    statusEl.innerHTML = 'Waiting on: ski, mtb, brewery, hiking...';
     const overallStart = performance.now();
 
-    // Fire all four AT ONCE — this is the point: see what happens when they
-    // compete for the same shared Overpass instance simultaneously, not
-    // politely one after another.
-    const results = await Promise.all(['ski','mtb','brewery','hiking'].map(refreshOne));
+    const statusLines = {};
+    cats.forEach(c => { statusLines[c] = `⏳ ${c}: waiting...`; });
+    const paintStatus = () => { statusEl.innerHTML = cats.map(c => statusLines[c]).join('<br>'); };
+    paintStatus();
 
-    const overallMs = Math.round(performance.now() - overallStart);
-    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
-    document.getElementById('metaInfo').textContent = `Full load test: ${overallMs}ms total (wall clock, ran concurrently)`;
-    render();
+    let remaining = cats.length;
 
-    statusEl.innerHTML = results.map(r=>{
-      if(r.ok){
-        const failNote = r.failCount ? ` · ${r.failCount} sub-failures` : '';
-        return `✅ ${r.cat}: ${r.count} results in ${r.elapsedMs}ms${failNote}`;
-      }
-      return `❌ ${r.cat}: FAILED after ${r.elapsedMs}ms — ${r.error}`;
-    }).join('<br>');
+    // Fire all four AT ONCE, but don't wait for all of them before updating
+    // anything — each category paints itself onto the map/sidebar and its
+    // own status line the moment IT resolves. A fast category (brewery,
+    // often <1s) shouldn't sit invisible just because ski or hiking are
+    // still struggling with a slow Overpass response.
+    cats.forEach(cat=>{
+      refreshOne(cat).then(r=>{
+        remaining--;
+        if(r.ok){
+          const failNote = r.failCount ? ` · ${r.failCount} sub-failures` : '';
+          statusLines[cat] = `✅ ${cat}: ${r.count} results in ${r.elapsedMs}ms${failNote}`;
+        }else{
+          statusLines[cat] = `❌ ${cat}: FAILED after ${r.elapsedMs}ms — ${r.error}`;
+        }
+        paintStatus();
+        document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+        render(); // repaint map/sidebar with whatever's arrived so far
 
-    btn.disabled = false;
-    btn.textContent = '⚡ Refresh ALL (full load test)';
+        if(remaining === 0){
+          const overallMs = Math.round(performance.now() - overallStart);
+          document.getElementById('metaInfo').textContent = `Full load test: ${overallMs}ms total (all categories settled)`;
+          btn.disabled = false;
+          btn.textContent = '⚡ Refresh ALL (full load test)';
+        }
+      });
+    });
   });
 
   document.querySelectorAll('.refresh-btn').forEach(btn=>{

@@ -17,7 +17,11 @@ const IMBA_LABELS = {
   3: 'Advanced (Black)', 4: 'Expert (Double Black)'
 };
 
+// Reordered: private.coffee's mirror explicitly advertises no rate limits and
+// has been the most consistently responsive tonight. overpass-api.de kept as
+// fallback since it's the "main" instance despite recent reported flakiness.
 const OVERPASS_ENDPOINTS = [
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter'
 ];
