@@ -1,15 +1,13 @@
 // api/fetch-ski.js
 // Vercel serverless function — GET /api/fetch-ski.
 //
-// HONEST CAVEAT: the local script queried 7 resorts ONE AT A TIME with 4s
-// gaps and up to 15s retry backoff each, specifically to be gentle with
-// Overpass's shared public instance. That pattern doesn't fit comfortably
-// inside a serverless function's time budget (60s max on Vercel Hobby).
-// Delays here are shortened to try to fit — but if several resorts need
-// retries in the same run, this can still time out. If that happens
-// consistently, the real fix is querying resorts in parallel (rougher on
-// Overpass, higher 429 risk) or splitting into multiple smaller functions —
-// not attempted yet, flagging as a known limitation of this endpoint.
+// v2: consolidated all 7 resort queries into ONE Overpass request instead of
+// 7 sequential ones. The old version measured 56 seconds under concurrent
+// load (with mtb/hiking also hitting Overpass at once) — dangerously close
+// to Vercel's 60s cap. One combined query removes 7x network round-trip
+// overhead and the inter-resort delays entirely. Overlapping bboxes
+// (A-Basin/Keystone are close together) are resolved by assigning each way
+// to whichever resort bbox contains its first point.
 
 const DIFF_MAP = {
   novice: 1, easy: 1, intermediate: 2, advanced: 3, expert: 4, freeride: 5, extreme: 5
@@ -76,35 +74,69 @@ async function overpassRequest(query) {
   throw lastErr;
 }
 
-async function fetchResort(resort) {
-  const bboxStr = bboxFor(resort);
+// (old per-resort fetchResort() removed — replaced by fetchAllResorts()
+// below, which combines all 7 into a single Overpass request.)
+
+async function fetchAllResorts() {
+  const bboxStr = r => bboxFor(r);
+  // ONE query covering all 7 resorts' bboxes, instead of 7 separate HTTP
+  // round-trips with delays between them. Same total data, way less overhead,
+  // and gentler on Overpass than 7 distinct connections.
+  const clauses = RESORTS.map(r => `
+      way["piste:type"="downhill"](${bboxStr(r)});
+      way["aerialway"](${bboxStr(r)});
+  `).join('\n');
   const query = `
-    [out:json][timeout:25];
+    [out:json][timeout:50];
     (
-      way["piste:type"="downhill"](${bboxStr});
-      way["aerialway"](${bboxStr});
+      ${clauses}
     );
     out geom;
   `;
   const data = await overpassRequest(query);
-  let weightedDiffSum = 0, diffWeightTotal = 0, liftCount = 0, gondolaCount = 0;
-  for (const el of data.elements || []) {
-    if (el.type !== 'way' || !el.tags) continue;
-    if (el.tags['piste:type'] === 'downhill' && el.geometry) {
+  const elements = data.elements || [];
+
+  // A way can fall inside more than one resort's bbox only if those boxes
+  // overlap (the known A-Basin/Keystone case). Assign each way to whichever
+  // resort bbox contains its FIRST point — same effective grouping as
+  // separate per-resort queries produced, just computed client-side now.
+  function resortForPoint(pt) {
+    for (const r of RESORTS) {
+      const latMin = r.lat - LAT_PAD, latMax = r.lat + LAT_PAD;
+      const lonMin = r.lon - LON_PAD, lonMax = r.lon + LON_PAD;
+      if (pt.lat >= latMin && pt.lat <= latMax && pt.lon >= lonMin && pt.lon <= lonMax) return r.name;
+    }
+    return null;
+  }
+
+  const byResort = {};
+  RESORTS.forEach(r => { byResort[r.name] = { weightedDiffSum: 0, diffWeightTotal: 0, liftCount: 0, gondolaCount: 0 }; });
+
+  for (const el of elements) {
+    if (el.type !== 'way' || !el.tags || !el.geometry || el.geometry.length === 0) continue;
+    const resortName = resortForPoint(el.geometry[0]);
+    if (!resortName) continue;
+    const bucket = byResort[resortName];
+
+    if (el.tags['piste:type'] === 'downhill') {
       const len = wayLengthMeters(el.geometry);
       const diffVal = DIFF_MAP[(el.tags['piste:difficulty'] || '').toLowerCase()];
-      if (diffVal && len > 0) { weightedDiffSum += diffVal * len; diffWeightTotal += len; }
+      if (diffVal && len > 0) { bucket.weightedDiffSum += diffVal * len; bucket.diffWeightTotal += len; }
     }
     if (el.tags.aerialway) {
-      liftCount++;
-      if (GONDOLA_TYPES.has(el.tags.aerialway)) gondolaCount++;
+      bucket.liftCount++;
+      if (GONDOLA_TYPES.has(el.tags.aerialway)) bucket.gondolaCount++;
     }
   }
-  return {
-    name: resort.name, lat: resort.lat, lon: resort.lon,
-    difficultyAvg: diffWeightTotal > 0 ? Math.round((weightedDiffSum / diffWeightTotal) * 100) / 100 : null,
-    liftCount, gondolaCount, vertical: null
-  };
+
+  return RESORTS.map(r => {
+    const b = byResort[r.name];
+    return {
+      name: r.name, lat: r.lat, lon: r.lon,
+      difficultyAvg: b.diffWeightTotal > 0 ? Math.round((b.weightedDiffSum / b.diffWeightTotal) * 100) / 100 : null,
+      liftCount: b.liftCount, gondolaCount: b.gondolaCount, vertical: null
+    };
+  });
 }
 
 function assignSizeTiers(resorts) {
@@ -122,20 +154,15 @@ function assignSizeTiers(resorts) {
 }
 
 module.exports = async (req, res) => {
-  const results = [];
-  const failures = [];
-  for (const resort of RESORTS) {
-    try {
-      results.push(await fetchResort(resort));
-    } catch (e) {
-      failures.push({ name: resort.name, error: e.message });
-    }
-    await new Promise(r => setTimeout(r, 800)); // shortened from 4s local delay
+  try {
+    const results = await fetchAllResorts();
+    const tiered = assignSizeTiers(results);
+    res.status(200).json({
+      generatedAt: new Date().toISOString(),
+      resorts: tiered,
+      failures: [] // single-query version fails all-or-nothing rather than per-resort
+    });
+  } catch (e) {
+    res.status(502).json({ error: 'Overpass request failed', detail: e.message, resorts: [], failures: RESORTS.map(r => ({ name: r.name, error: 'batch query failed' })) });
   }
-  const tiered = assignSizeTiers(results);
-  res.status(200).json({
-    generatedAt: new Date().toISOString(),
-    resorts: tiered,
-    failures // empty array if all 7 succeeded — surfaced so the UI can show partial-result state
-  });
 };
