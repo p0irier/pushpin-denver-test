@@ -308,13 +308,13 @@
       render();
       if(result.ok){
         const failNote = result.failCount ? ` (${result.failCount} sub-failures)` : '';
-        btn.textContent = `✅ Got ${result.count}${failNote}`;
+        btn.textContent = `✅ ${result.count} in ${result.elapsedMs}ms${failNote}`;
       }else{
         console.error(result.error);
-        btn.textContent = '❌ Failed — try again';
+        btn.textContent = `❌ Failed after ${result.elapsedMs}ms — try again`;
       }
       btn.disabled = false;
-      setTimeout(()=>{ btn.textContent = original; }, 4000);
+      setTimeout(()=>{ btn.textContent = original; }, 10000);
     });
   });
 

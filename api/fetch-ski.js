@@ -151,14 +151,16 @@ async function fetchStatsForAreas(areas) {
     }
   }
 
-  return areas.map(a => {
+  const withLifts = areas.map(a => {
     const b = byArea[a.name];
     return {
       name: a.name, lat: a.lat, lon: a.lon,
       difficultyAvg: b.diffWeightTotal > 0 ? Math.round((b.weightedDiffSum / b.diffWeightTotal) * 100) / 100 : null,
       liftCount: b.liftCount, gondolaCount: b.gondolaCount, vertical: null
     };
-  });
+  }).filter(r => r.liftCount > 0); // drop backcountry-only areas — no lift infrastructure tagged means it's not a lift-served resort
+
+  return withLifts;
 }
 
 function assignSizeTiers(resorts) {
@@ -186,6 +188,7 @@ module.exports = async (req, res) => {
       generatedAt: new Date().toISOString(),
       region: regionKey,
       discoveredAreaCount: areas.length,
+      droppedAsBackcountryOnly: areas.length - results.length,
       resorts: tiered,
       failures: []
     });
