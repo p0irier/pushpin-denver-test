@@ -1,58 +1,45 @@
 // api/fetch-ski.js
-// Vercel serverless function — GET /api/fetch-ski.
+// Vercel serverless function — GET /api/fetch-ski?region=denver|norway
 //
-// v2: consolidated all 7 resort queries into ONE Overpass request instead of
-// 7 sequential ones. The old version measured 56 seconds under concurrent
-// load (with mtb/hiking also hitting Overpass at once) — dangerously close
-// to Vercel's 60s cap. One combined query removes 7x network round-trip
-// overhead and the inter-resort delays entirely. Overlapping bboxes
-// (A-Basin/Keystone are close together) are resolved by assigning each way
-// to whichever resort bbox contains its first point.
+// v3 — REMOVED the hardcoded named resort list entirely. Resorts are now
+// DISCOVERED from OSM data itself, the same way MTB/hiking already work:
+//
+// Step 1: query the region bbox for named landuse=winter_sports areas —
+//         this is how OSM tags an actual ski area boundary. This IS the
+//         resort list now, found live, not typed in by us.
+// Step 2: for each discovered area, compute its own bounding box from its
+//         boundary geometry, then run the same combined piste/lift query
+//         as before — just against discovered boundaries instead of
+//         hand-picked resort centers.
+//
+// Known limitation, stated honestly: this only catches resorts mapped as a
+// single closed WAY with landuse=winter_sports + a name. Resorts mapped as
+// multipolygon RELATIONS (common for larger/irregular resort shapes) are not
+// handled yet — that would need relation member recursion, not implemented
+// in this pass. If a region returns suspiciously few/zero resorts, this is
+// the first thing to check.
 
 const DIFF_MAP = {
   novice: 1, easy: 1, intermediate: 2, advanced: 3, expert: 4, freeride: 5, extreme: 5
 };
 const GONDOLA_TYPES = new Set(['gondola', 'mixed_lift', 'cable_car']);
 
-const RESORTS = [
-  { name: 'Arapahoe Basin', lat: 39.6425, lon: -105.8719 },
-  { name: 'Keystone',       lat: 39.6046, lon: -105.9439 },
-  { name: 'Loveland',       lat: 39.6803, lon: -105.8981 },
-  { name: 'Copper Mountain',lat: 39.5019, lon: -106.1509 },
-  { name: 'Breckenridge',   lat: 39.4817, lon: -106.0384 },
-  { name: 'Eldora',         lat: 39.9375, lon: -105.5828 },
-  { name: 'Ski Cooper',     lat: 39.3628, lon: -106.3097 }
-];
+// Same region bboxes used by the other categories — the broader "area of
+// interest" a trip would cover, not a single resort's footprint.
+const REGIONS = {
+  denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
+  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+};
 
-const LAT_PAD = 0.025, LON_PAD = 0.035;
+const BOUNDARY_PAD_DEG = 0.01; // small margin so lifts/pistes just outside the exact drawn boundary still get caught
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter'
 ];
 
-function bboxFor(r) {
-  return `${r.lat - LAT_PAD},${r.lon - LON_PAD},${r.lat + LAT_PAD},${r.lon + LON_PAD}`;
-}
-
-function haversineMeters(a, b) {
-  const R = 6371000;
-  const toRad = d => (d * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lon - a.lon);
-  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-function wayLengthMeters(geometry) {
-  let total = 0;
-  for (let i = 1; i < geometry.length; i++) total += haversineMeters(geometry[i - 1], geometry[i]);
-  return total;
-}
-
 async function overpassRequest(query) {
   let lastErr;
-  for (let attempt = 0; attempt < 2; attempt++) { // fewer retries than local script — time budget
+  for (let attempt = 0; attempt < 2; attempt++) {
     const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
     try {
       const resp = await fetch(endpoint, {
@@ -74,17 +61,58 @@ async function overpassRequest(query) {
   throw lastErr;
 }
 
-// (old per-resort fetchResort() removed — replaced by fetchAllResorts()
-// below, which combines all 7 into a single Overpass request.)
+function haversineMeters(a, b) {
+  const R = 6371000;
+  const toRad = d => (d * Math.PI) / 180;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lon - a.lon);
+  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
+  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
 
-async function fetchAllResorts() {
-  const bboxStr = r => bboxFor(r);
-  // ONE query covering all 7 resorts' bboxes, instead of 7 separate HTTP
-  // round-trips with delays between them. Same total data, way less overhead,
-  // and gentler on Overpass than 7 distinct connections.
-  const clauses = RESORTS.map(r => `
-      way["piste:type"="downhill"](${bboxStr(r)});
-      way["aerialway"](${bboxStr(r)});
+function wayLengthMeters(geometry) {
+  let total = 0;
+  for (let i = 1; i < geometry.length; i++) total += haversineMeters(geometry[i - 1], geometry[i]);
+  return total;
+}
+
+// Step 1: discover named winter-sports areas within the region.
+async function discoverResortAreas(regionBbox) {
+  const bboxStr = `${regionBbox.south},${regionBbox.west},${regionBbox.north},${regionBbox.east}`;
+  const query = `
+    [out:json][timeout:40];
+    (
+      way["landuse"="winter_sports"]["name"](${bboxStr});
+    );
+    out geom;
+  `;
+  const data = await overpassRequest(query);
+  const areas = [];
+  for (const el of data.elements || []) {
+    if (el.type !== 'way' || !el.tags || !el.tags.name || !el.geometry || el.geometry.length === 0) continue;
+    const lats = el.geometry.map(p => p.lat);
+    const lons = el.geometry.map(p => p.lon);
+    areas.push({
+      name: el.tags.name,
+      south: Math.min(...lats) - BOUNDARY_PAD_DEG,
+      north: Math.max(...lats) + BOUNDARY_PAD_DEG,
+      west: Math.min(...lons) - BOUNDARY_PAD_DEG,
+      east: Math.max(...lons) + BOUNDARY_PAD_DEG,
+      lat: lats.reduce((a, b) => a + b, 0) / lats.length,
+      lon: lons.reduce((a, b) => a + b, 0) / lons.length
+    });
+  }
+  return areas;
+}
+
+// Step 2: pull piste/lift data for all discovered areas in one combined query.
+async function fetchStatsForAreas(areas) {
+  if (areas.length === 0) return [];
+
+  const clauses = areas.map(a => `
+      way["piste:type"="downhill"](${a.south},${a.west},${a.north},${a.east});
+      way["aerialway"](${a.south},${a.west},${a.north},${a.east});
   `).join('\n');
   const query = `
     [out:json][timeout:50];
@@ -96,27 +124,21 @@ async function fetchAllResorts() {
   const data = await overpassRequest(query);
   const elements = data.elements || [];
 
-  // A way can fall inside more than one resort's bbox only if those boxes
-  // overlap (the known A-Basin/Keystone case). Assign each way to whichever
-  // resort bbox contains its FIRST point — same effective grouping as
-  // separate per-resort queries produced, just computed client-side now.
-  function resortForPoint(pt) {
-    for (const r of RESORTS) {
-      const latMin = r.lat - LAT_PAD, latMax = r.lat + LAT_PAD;
-      const lonMin = r.lon - LON_PAD, lonMax = r.lon + LON_PAD;
-      if (pt.lat >= latMin && pt.lat <= latMax && pt.lon >= lonMin && pt.lon <= lonMax) return r.name;
+  function areaForPoint(pt) {
+    for (const a of areas) {
+      if (pt.lat >= a.south && pt.lat <= a.north && pt.lon >= a.west && pt.lon <= a.east) return a.name;
     }
     return null;
   }
 
-  const byResort = {};
-  RESORTS.forEach(r => { byResort[r.name] = { weightedDiffSum: 0, diffWeightTotal: 0, liftCount: 0, gondolaCount: 0 }; });
+  const byArea = {};
+  areas.forEach(a => { byArea[a.name] = { weightedDiffSum: 0, diffWeightTotal: 0, liftCount: 0, gondolaCount: 0 }; });
 
   for (const el of elements) {
     if (el.type !== 'way' || !el.tags || !el.geometry || el.geometry.length === 0) continue;
-    const resortName = resortForPoint(el.geometry[0]);
-    if (!resortName) continue;
-    const bucket = byResort[resortName];
+    const areaName = areaForPoint(el.geometry[0]);
+    if (!areaName) continue;
+    const bucket = byArea[areaName];
 
     if (el.tags['piste:type'] === 'downhill') {
       const len = wayLengthMeters(el.geometry);
@@ -129,10 +151,10 @@ async function fetchAllResorts() {
     }
   }
 
-  return RESORTS.map(r => {
-    const b = byResort[r.name];
+  return areas.map(a => {
+    const b = byArea[a.name];
     return {
-      name: r.name, lat: r.lat, lon: r.lon,
+      name: a.name, lat: a.lat, lon: a.lon,
       difficultyAvg: b.diffWeightTotal > 0 ? Math.round((b.weightedDiffSum / b.diffWeightTotal) * 100) / 100 : null,
       liftCount: b.liftCount, gondolaCount: b.gondolaCount, vertical: null
     };
@@ -154,15 +176,20 @@ function assignSizeTiers(resorts) {
 }
 
 module.exports = async (req, res) => {
+  const regionKey = (req.query && req.query.region) || 'denver';
+  const regionBbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const results = await fetchAllResorts();
+    const areas = await discoverResortAreas(regionBbox);
+    const results = await fetchStatsForAreas(areas);
     const tiered = assignSizeTiers(results);
     res.status(200).json({
       generatedAt: new Date().toISOString(),
+      region: regionKey,
+      discoveredAreaCount: areas.length,
       resorts: tiered,
-      failures: [] // single-query version fails all-or-nothing rather than per-resort
+      failures: []
     });
   } catch (e) {
-    res.status(502).json({ error: 'Overpass request failed', detail: e.message, resorts: [], failures: RESORTS.map(r => ({ name: r.name, error: 'batch query failed' })) });
+    res.status(502).json({ error: 'Overpass request failed', detail: e.message, resorts: [], failures: [] });
   }
 };

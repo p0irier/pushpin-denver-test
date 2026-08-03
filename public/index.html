@@ -51,6 +51,11 @@
   <main>
     <div class="sidebar">
       <div class="filters">
+        <h3>Region</h3>
+        <select id="regionSelect" style="width:100%;font-family:'JetBrains Mono',monospace;font-size:12px;padding:6px;border:1.5px solid var(--line);border-radius:4px;background:var(--white);margin-bottom:10px;">
+          <option value="denver">Denver, CO (7 resorts, established test)</option>
+          <option value="norway">Norway — Oppdal/Trondheim/Røros corridor (1 resort, new test)</option>
+        </select>
         <h3>Categories</h3>
         <div class="chip-row">
           <div class="chip" data-cat="ski" style="color:var(--ski);border-color:var(--ski);">⛷️ Ski resorts</div>
@@ -243,9 +248,10 @@
 
   async function refreshOne(cat){
     const cfg = REFRESH_CONFIG[cat];
+    const region = document.getElementById('regionSelect').value;
     const startedAt = performance.now();
     try{
-      const resp = await fetch(cfg.endpoint);
+      const resp = await fetch(`${cfg.endpoint}?region=${region}`);
       const elapsedMs = Math.round(performance.now() - startedAt);
       if(!resp.ok){
         const err = await resp.json().catch(()=>({}));
@@ -294,30 +300,21 @@
   document.querySelectorAll('.refresh-btn').forEach(btn=>{
     btn.addEventListener('click', async ()=>{
       const cat = btn.dataset.refresh;
-      const cfg = REFRESH_CONFIG[cat];
       const original = btn.textContent;
       btn.disabled = true;
       btn.textContent = '⏳ Fetching live (can take up to ~30-60s)...';
-      try{
-        const resp = await fetch(cfg.endpoint);
-        if(!resp.ok){
-          const err = await resp.json().catch(()=>({}));
-          throw new Error(err.detail || `HTTP ${resp.status}`);
-        }
-        const data = await resp.json();
-        cfg.apply(data);
-        document.getElementById('metaInfo').textContent = `${cat} data: ${new Date(data.generatedAt).toLocaleString()} (live refresh)`;
-        document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
-        render();
-        const failNote = data.failures && data.failures.length ? ` (${data.failures.length} failed)` : '';
-        btn.textContent = `✅ Got ${cfg.count()}${failNote}`;
-      }catch(e){
-        console.error(e);
+      const result = await refreshOne(cat);
+      document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+      render();
+      if(result.ok){
+        const failNote = result.failCount ? ` (${result.failCount} sub-failures)` : '';
+        btn.textContent = `✅ Got ${result.count}${failNote}`;
+      }else{
+        console.error(result.error);
         btn.textContent = '❌ Failed — try again';
-      }finally{
-        btn.disabled = false;
-        setTimeout(()=>{ btn.textContent = original; }, 4000);
       }
+      btn.disabled = false;
+      setTimeout(()=>{ btn.textContent = original; }, 4000);
     });
   });
 

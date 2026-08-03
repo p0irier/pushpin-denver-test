@@ -11,7 +11,10 @@
 // That's fine for manual testing. If this becomes the real per-trip pattern,
 // add caching (Vercel KV/Blob) keyed by region before relying on it at scale.
 
-const HIKING_BBOX = { south: 39.55, west: -105.35, north: 39.85, east: -105.05 };
+const REGIONS = {
+  denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
+  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+};
 const MIN_TRAIL_MILES = 3;
 
 const OVERPASS_ENDPOINTS = [
@@ -73,8 +76,8 @@ function segmentLengthMiles(geometry) {
   return meters / 1609.34;
 }
 
-async function fetchTrails() {
-  const bboxStr = `${HIKING_BBOX.south},${HIKING_BBOX.west},${HIKING_BBOX.north},${HIKING_BBOX.east}`;
+async function fetchTrails(bbox) {
+  const bboxStr = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
   const query = `
     [out:json][timeout:50];
     (
@@ -120,11 +123,14 @@ async function fetchTrails() {
 }
 
 module.exports = async (req, res) => {
+  const regionKey = (req.query && req.query.region) || 'denver';
+  const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const trails = await fetchTrails();
+    const trails = await fetchTrails(bbox);
     res.status(200).json({
       generatedAt: new Date().toISOString(),
-      bbox: HIKING_BBOX,
+      region: regionKey,
+      bbox,
       minTrailMiles: MIN_TRAIL_MILES,
       trails
     });

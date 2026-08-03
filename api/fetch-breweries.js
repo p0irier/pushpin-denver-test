@@ -16,16 +16,29 @@
 
 const PER_PAGE = 200;
 
-// Union of the MTB/hiking metro bbox and the ski resort spread (Ski Cooper
-// in the southwest to Eldora in the north). Generous on purpose — better to
-// slightly over-include than repeat the Denver-only miss.
-const REGION_BBOX = { south: 39.30, west: -106.40, north: 39.95, east: -105.00 };
+// Each region defines which Open Brewery DB filter to use, plus the bbox to
+// geo-filter against afterward. Denver stays on by_state (Colorado is small,
+// fast, few pages). Norway has no state-equivalent to filter on, so it uses
+// by_country instead — slower/bigger pull, but still far smaller than
+// pulling worldwide.
+const REGIONS = {
+  denver: {
+    filterParam: 'by_state',
+    filterValue: 'Colorado',
+    bbox: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 }
+  },
+  norway: {
+    filterParam: 'by_country',
+    filterValue: 'Norway',
+    bbox: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+  }
+};
 
-async function fetchAllPagesForState(state) {
+async function fetchAllPages(filterParam, filterValue) {
   const results = [];
   let page = 1;
   while (true) {
-    const url = `https://api.openbrewerydb.org/v1/breweries?by_state=${encodeURIComponent(state)}&per_page=${PER_PAGE}&page=${page}`;
+    const url = `https://api.openbrewerydb.org/v1/breweries?${filterParam}=${encodeURIComponent(filterValue)}&per_page=${PER_PAGE}&page=${page}`;
     const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
     if (!resp.ok) throw new Error(`Open Brewery DB returned ${resp.status} on page ${page}`);
     const batch = await resp.json();
@@ -55,16 +68,19 @@ function withinBbox(b, bbox) {
 }
 
 module.exports = async (req, res) => {
+  const regionKey = (req.query && req.query.region) || 'denver';
+  const region = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const raw = await fetchAllPagesForState('Colorado');
+    const raw = await fetchAllPages(region.filterParam, region.filterValue);
     const cleaned = raw
       .map(cleanBrewery)
       .filter(b => b.lat !== null && b.lng !== null)
-      .filter(b => withinBbox(b, REGION_BBOX));
+      .filter(b => withinBbox(b, region.bbox));
     res.status(200).json({
       generatedAt: new Date().toISOString(),
-      bbox: REGION_BBOX,
-      totalStatewide: raw.length,
+      region: regionKey,
+      bbox: region.bbox,
+      totalPulled: raw.length,
       breweries: cleaned
     });
   } catch (e) {

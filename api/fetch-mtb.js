@@ -1,8 +1,15 @@
 // api/fetch-mtb.js
-// Vercel serverless function — GET /api/fetch-mtb triggers a live Overpass
-// query and returns JSON directly. Same logic as scripts/fetch-mtb.js.
+// Vercel serverless function — GET /api/fetch-mtb?region=denver|norway
+//
+// Generalized to accept a region instead of a hardcoded Denver bbox, so the
+// same function/logic works for a totally different country. Norway's bbox
+// covers the Oppdal -> Trondheim -> Røros corridor (the actual test-case
+// trip route from the travel-activity-profile).
 
-const MTB_BBOX = { south: 39.55, west: -105.35, north: 39.85, east: -105.05 };
+const REGIONS = {
+  denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
+  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+};
 
 const SCALE_TO_IMBA_BUCKET = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 3, 5: 4, 6: 4 };
 const IMBA_LABELS = {
@@ -68,8 +75,8 @@ function resolveImba(tags) {
   return null;
 }
 
-async function fetchTrails() {
-  const bboxStr = `${MTB_BBOX.south},${MTB_BBOX.west},${MTB_BBOX.north},${MTB_BBOX.east}`;
+async function fetchTrails(bbox) {
+  const bboxStr = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
   const query = `
     [out:json][timeout:50];
     (
@@ -100,9 +107,11 @@ async function fetchTrails() {
 }
 
 module.exports = async (req, res) => {
+  const regionKey = (req.query && req.query.region) || 'denver';
+  const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const trails = await fetchTrails();
-    res.status(200).json({ generatedAt: new Date().toISOString(), bbox: MTB_BBOX, trails });
+    const trails = await fetchTrails(bbox);
+    res.status(200).json({ generatedAt: new Date().toISOString(), region: regionKey, bbox, trails });
   } catch (e) {
     res.status(502).json({ error: 'Overpass request failed', detail: e.message });
   }
