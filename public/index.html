@@ -58,6 +58,7 @@
           <div class="chip" data-cat="brewery" style="color:var(--brewery);border-color:var(--brewery);">🍺 Breweries</div>
           <div class="chip" data-cat="hiking" style="color:var(--hiking);border-color:var(--hiking);">🥾 Hiking</div>
         </div>
+        <button id="refreshHikingBtn" style="margin-top:8px;font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--hiking);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh hiking from Overpass</button>
       </div>
       <div class="locations">
         <h3 id="listHeading">Results</h3>
@@ -128,8 +129,7 @@
   }
 
   function hikingCardHtml(t){
-    const flyPt = t.geometry[0][0];
-    return `<div class="card" style="border-left-color:var(--hiking)" data-fly="${flyPt.lat},${flyPt.lon}">
+    return `<div class="card" style="border-left-color:var(--hiking)" data-fly="${t.lat},${t.lon}">
       <div class="name">🥾 ${t.name}</div>
       <div class="stat-row">
         <span>${t.sacScale || 'Difficulty not tagged'}</span>
@@ -198,13 +198,10 @@
     }
     if(activeCats.has('hiking')){
       hikingData.trails.forEach(t=>{
-        const popupHtml = `<b>🥾 ${t.name}</b><br>${t.sacScale || 'Difficulty not tagged'} · ${t.distanceMiles} mi`;
-        t.geometry.forEach(segment=>{
-          const latlngs = segment.map(p=>[p.lat,p.lon]);
-          const line = L.polyline(latlngs, {color:'#7a5195', weight:4, opacity:0.85}).addTo(hikingLayer);
-          line.bindPopup(popupHtml);
-          latlngs.forEach(ll=>bounds.push(ll));
-        });
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:50%;background:var(--hiking);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([t.lat,t.lon],{icon}).addTo(hikingLayer);
+        m.bindPopup(`<b>🥾 ${t.name}</b><br>${t.sacScale || 'Difficulty not tagged'} · ${t.distanceMiles} mi`);
+        bounds.push([t.lat,t.lon]);
       });
     }
     if(bounds.length) map.fitBounds(L.latLngBounds(bounds), {padding:[40,40]});
@@ -240,6 +237,31 @@
     document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
     render();
   }
+
+  document.getElementById('refreshHikingBtn').addEventListener('click', async ()=>{
+    const btn = document.getElementById('refreshHikingBtn');
+    const original = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = '⏳ Querying Overpass (can take up to ~30s)...';
+    try{
+      const resp = await fetch('/api/fetch-hiking');
+      if(!resp.ok){
+        const err = await resp.json().catch(()=>({}));
+        throw new Error(err.detail || `HTTP ${resp.status}`);
+      }
+      hikingData = await resp.json();
+      document.getElementById('metaInfo').textContent = `Hiking data: ${new Date(hikingData.generatedAt).toLocaleString()} (live refresh)`;
+      document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+      render();
+      btn.textContent = `✅ Got ${hikingData.trails.length} trails`;
+    }catch(e){
+      console.error(e);
+      btn.textContent = '❌ Failed — check console, try again';
+    }finally{
+      btn.disabled = false;
+      setTimeout(()=>{ btn.textContent = original; }, 4000);
+    }
+  });
 
   initMap();
   loadData();

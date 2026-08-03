@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/fetch-hiking.js": {
+      "maxDuration": 60
+    }
+  }
+}
