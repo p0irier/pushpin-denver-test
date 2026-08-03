@@ -1,7 +1,8 @@
 {
   "functions": {
-    "api/fetch-hiking.js": {
-      "maxDuration": 60
-    }
+    "api/fetch-hiking.js": { "maxDuration": 60 },
+    "api/fetch-mtb.js": { "maxDuration": 60 },
+    "api/fetch-breweries.js": { "maxDuration": 30 },
+    "api/fetch-ski.js": { "maxDuration": 60 }
   }
 }

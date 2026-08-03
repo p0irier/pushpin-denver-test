@@ -58,7 +58,16 @@
           <div class="chip" data-cat="brewery" style="color:var(--brewery);border-color:var(--brewery);">🍺 Breweries</div>
           <div class="chip" data-cat="hiking" style="color:var(--hiking);border-color:var(--hiking);">🥾 Hiking</div>
         </div>
-        <button id="refreshHikingBtn" style="margin-top:8px;font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--hiking);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh hiking from Overpass</button>
+        <div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">
+          <button id="refreshAllBtn" style="font-size:12px;font-family:'JetBrains Mono',monospace;background:var(--pine-deep);color:var(--ochre-dim);border:1.5px solid var(--ochre);border-radius:4px;padding:8px 10px;cursor:pointer;font-weight:700;">⚡ Refresh ALL (full load test)</button>
+          <div id="loadTestStatus" style="font-size:10.5px;font-family:'JetBrains Mono',monospace;color:#6b6350;line-height:1.5;"></div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:5px;margin-top:10px;border-top:1px dashed var(--line);padding-top:10px;">
+          <button class="refresh-btn" data-refresh="ski" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--ski);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh ski only</button>
+          <button class="refresh-btn" data-refresh="mtb" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--mtb);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh MTB only</button>
+          <button class="refresh-btn" data-refresh="brewery" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--brewery);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh breweries only</button>
+          <button class="refresh-btn" data-refresh="hiking" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--hiking);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh hiking only</button>
+        </div>
       </div>
       <div class="locations">
         <h3 id="listHeading">Results</h3>
@@ -216,51 +225,100 @@
     });
   });
 
-  async function loadData(){
-    try{
-      const [skiResp, mtbResp, breweryResp, hikingResp] = await Promise.all([
-        fetch('./data/ski-denver.json'), fetch('./data/mtb-denver.json'), fetch('./data/breweries-denver.json'), fetch('./data/hiking-denver.json')
-      ]);
-      skiData = await skiResp.json();
-      mtbData = await mtbResp.json();
-      breweryData = await breweryResp.json();
-      hikingData = await hikingResp.json();
-    }catch(e){
-      console.error('Failed to load data', e);
-    }
-    const metaBits = [];
-    if(skiData.generatedAt) metaBits.push(`Ski data: ${new Date(skiData.generatedAt).toLocaleString()}`);
-    if(mtbData.generatedAt) metaBits.push(`MTB data: ${new Date(mtbData.generatedAt).toLocaleString()}`);
-    if(breweryData.generatedAt) metaBits.push(`Brewery data: ${new Date(breweryData.generatedAt).toLocaleString()}`);
-    if(hikingData.generatedAt) metaBits.push(`Hiking data: ${new Date(hikingData.generatedAt).toLocaleString()}`);
-    document.getElementById('metaInfo').textContent = metaBits.length ? metaBits.join(' · ') : 'No data fetched yet — see sidebar notes';
-    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+  function loadData(){
+    // No static JSON fetch anymore — everything comes from the live
+    // /api/fetch-* refresh buttons now. Page loads empty on purpose;
+    // click a refresh button to populate a category.
+    document.getElementById('metaInfo').textContent = 'No data yet — click a refresh button in the sidebar';
+    document.getElementById('listHeading').textContent = 'Results (0)';
     render();
   }
 
-  document.getElementById('refreshHikingBtn').addEventListener('click', async ()=>{
-    const btn = document.getElementById('refreshHikingBtn');
-    const original = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = '⏳ Querying Overpass (can take up to ~30s)...';
+  const REFRESH_CONFIG = {
+    ski:     { endpoint: '/api/fetch-ski',       apply: d => { skiData = d; }, count: () => skiData.resorts.length },
+    mtb:     { endpoint: '/api/fetch-mtb',       apply: d => { mtbData = d; }, count: () => mtbData.trails.length },
+    brewery: { endpoint: '/api/fetch-breweries', apply: d => { breweryData = d; }, count: () => breweryData.breweries.length },
+    hiking:  { endpoint: '/api/fetch-hiking',    apply: d => { hikingData = d; }, count: () => hikingData.trails.length }
+  };
+
+  async function refreshOne(cat){
+    const cfg = REFRESH_CONFIG[cat];
+    const startedAt = performance.now();
     try{
-      const resp = await fetch('/api/fetch-hiking');
+      const resp = await fetch(cfg.endpoint);
+      const elapsedMs = Math.round(performance.now() - startedAt);
       if(!resp.ok){
         const err = await resp.json().catch(()=>({}));
-        throw new Error(err.detail || `HTTP ${resp.status}`);
+        return { cat, ok:false, elapsedMs, error: err.detail || `HTTP ${resp.status}` };
       }
-      hikingData = await resp.json();
-      document.getElementById('metaInfo').textContent = `Hiking data: ${new Date(hikingData.generatedAt).toLocaleString()} (live refresh)`;
-      document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
-      render();
-      btn.textContent = `✅ Got ${hikingData.trails.length} trails`;
+      const data = await resp.json();
+      cfg.apply(data);
+      const failCount = data.failures ? data.failures.length : 0;
+      return { cat, ok:true, elapsedMs, count: cfg.count(), failCount };
     }catch(e){
-      console.error(e);
-      btn.textContent = '❌ Failed — check console, try again';
-    }finally{
-      btn.disabled = false;
-      setTimeout(()=>{ btn.textContent = original; }, 4000);
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      return { cat, ok:false, elapsedMs, error: e.message };
     }
+  }
+
+  document.getElementById('refreshAllBtn').addEventListener('click', async ()=>{
+    const btn = document.getElementById('refreshAllBtn');
+    const statusEl = document.getElementById('loadTestStatus');
+    btn.disabled = true;
+    btn.textContent = '⚡ Firing all 4 concurrently...';
+    statusEl.innerHTML = 'Waiting on: ski, mtb, brewery, hiking...';
+    const overallStart = performance.now();
+
+    // Fire all four AT ONCE — this is the point: see what happens when they
+    // compete for the same shared Overpass instance simultaneously, not
+    // politely one after another.
+    const results = await Promise.all(['ski','mtb','brewery','hiking'].map(refreshOne));
+
+    const overallMs = Math.round(performance.now() - overallStart);
+    document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+    document.getElementById('metaInfo').textContent = `Full load test: ${overallMs}ms total (wall clock, ran concurrently)`;
+    render();
+
+    statusEl.innerHTML = results.map(r=>{
+      if(r.ok){
+        const failNote = r.failCount ? ` · ${r.failCount} sub-failures` : '';
+        return `✅ ${r.cat}: ${r.count} results in ${r.elapsedMs}ms${failNote}`;
+      }
+      return `❌ ${r.cat}: FAILED after ${r.elapsedMs}ms — ${r.error}`;
+    }).join('<br>');
+
+    btn.disabled = false;
+    btn.textContent = '⚡ Refresh ALL (full load test)';
+  });
+
+  document.querySelectorAll('.refresh-btn').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const cat = btn.dataset.refresh;
+      const cfg = REFRESH_CONFIG[cat];
+      const original = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = '⏳ Fetching live (can take up to ~30-60s)...';
+      try{
+        const resp = await fetch(cfg.endpoint);
+        if(!resp.ok){
+          const err = await resp.json().catch(()=>({}));
+          throw new Error(err.detail || `HTTP ${resp.status}`);
+        }
+        const data = await resp.json();
+        cfg.apply(data);
+        document.getElementById('metaInfo').textContent = `${cat} data: ${new Date(data.generatedAt).toLocaleString()} (live refresh)`;
+        document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+        render();
+        const failNote = data.failures && data.failures.length ? ` (${data.failures.length} failed)` : '';
+        btn.textContent = `✅ Got ${cfg.count()}${failNote}`;
+      }catch(e){
+        console.error(e);
+        btn.textContent = '❌ Failed — try again';
+      }finally{
+        btn.disabled = false;
+        setTimeout(()=>{ btn.textContent = original; }, 4000);
+      }
+    });
   });
 
   initMap();
