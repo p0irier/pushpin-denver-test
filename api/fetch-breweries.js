@@ -21,6 +21,38 @@
 // (New) Text Search supports pagination up to 60 total (3 pages) — not
 // implemented yet, worth adding if 20 proves too few for a region.
 
+// v4 — added review-based keyword scoring, per Steve's preferred terms.
+// This requires the `reviews` field, which bumps this call from Text Search
+// Pro to Text Search Enterprise + Atmosphere pricing (~$32/1K -> ~$40/1K if
+// the free allowance is ever exceeded). Still ONE call per refresh either
+// way — reviews come bundled into the same request, not a separate call per
+// brewery. Free allowance at this tier is 1,000 calls/month (down from
+// Pro's 5,000), still comfortably enough for personal trip-planning use.
+//
+// IMPORTANT CACHING NOTE: because this now touches `reviews`, this data
+// cannot be cached under Google's terms (reviews/ratings/names must be
+// fetched live each time, unlike Overpass data which has no such
+// restriction). If caching gets built later for the other categories,
+// breweries specifically will need to stay live-fetch-only.
+//
+// We never display the actual review text to the user — only an internal
+// match count derived from it — so Google's "must show reviewer attribution"
+// requirement (author name/photo/link) shouldn't apply here; that rule is
+// about displaying review content, not using it as a private ranking input.
+
+const KEYWORDS = ['unique', 'enthusiast', 'ipa', 'hazy', 'new england', 'taproom', 'release'];
+const MIN_RATING_NO_KEYWORDS_NEEDED = 4.6;
+const MIN_KEYWORD_MATCHES_IF_BELOW_RATING = 5;
+
+function countKeywordMatches(reviews) {
+  if (!reviews || reviews.length === 0) return { count: 0, matched: [] };
+  const combinedText = reviews
+    .map(r => (r.text && r.text.text) ? r.text.text.toLowerCase() : '')
+    .join(' ');
+  const matched = KEYWORDS.filter(kw => combinedText.includes(kw));
+  return { count: matched.length, matched };
+}
+
 const REGIONS = {
   denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
   norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
@@ -57,7 +89,8 @@ async function searchBreweries(bbox) {
         'places.types',
         'places.websiteUri',
         'places.nationalPhoneNumber',
-        'places.businessStatus'
+        'places.businessStatus',
+        'places.reviews'
       ].join(',')
     },
     body: JSON.stringify(body)
@@ -72,6 +105,7 @@ async function searchBreweries(bbox) {
 }
 
 function cleanPlace(p) {
+  const { count, matched } = countKeywordMatches(p.reviews);
   return {
     name: p.displayName ? p.displayName.text : 'Unknown',
     address: p.formattedAddress || null,
@@ -81,8 +115,17 @@ function cleanPlace(p) {
     ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : 0,
     website: p.websiteUri || null,
     phone: p.nationalPhoneNumber || null,
-    businessStatus: p.businessStatus || 'OPERATIONAL'
+    businessStatus: p.businessStatus || 'OPERATIONAL',
+    keywordMatchCount: count,
+    keywordsMatched: matched // e.g. ['ipa','hazy','taproom'] — kept for transparency, not displayed as review quotes
   };
+}
+
+// Filter: rating >= 4.6 always qualifies. Below that, needs at least 5 of
+// the 7 preferred terms present in its (sampled) review text to still show.
+function qualifiesForDisplay(b) {
+  if (b.rating !== null && b.rating >= MIN_RATING_NO_KEYWORDS_NEEDED) return true;
+  return b.keywordMatchCount >= MIN_KEYWORD_MATCHES_IF_BELOW_RATING;
 }
 
 module.exports = async (req, res) => {
@@ -93,13 +136,16 @@ module.exports = async (req, res) => {
     const cleaned = rawPlaces
       .map(cleanPlace)
       .filter(b => b.lat !== null && b.lng !== null)
-      .filter(b => b.businessStatus === 'OPERATIONAL'); // drop closed/temporarily-closed automatically
+      .filter(b => b.businessStatus === 'OPERATIONAL')
+      .filter(qualifiesForDisplay)
+      .sort((a, b) => b.keywordMatchCount - a.keywordMatchCount || (b.rating || 0) - (a.rating || 0));
 
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
       bbox,
       totalPulled: rawPlaces.length,
+      droppedByFilter: rawPlaces.length - cleaned.length,
       breweries: cleaned
     });
   } catch (e) {

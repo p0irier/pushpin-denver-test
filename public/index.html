@@ -135,12 +135,16 @@
 
   function breweryCardHtml(b){
     const ratingText = b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount})` : 'No rating yet';
+    const matchText = b.keywordMatchCount > 0 ? `🎯 ${b.keywordMatchCount}/7 terms` : '';
+    const matchedList = b.keywordsMatched && b.keywordsMatched.length ? `<div class="desc" style="margin-top:4px;font-style:italic;">Matched: ${b.keywordsMatched.join(', ')}</div>` : '';
     return `<div class="card" style="border-left-color:var(--brewery)" data-fly="${b.lat},${b.lng}">
       <div class="name">🍺 ${b.name}</div>
       <div class="stat-row">
         <span>${ratingText}</span>
+        ${matchText ? `<span>${matchText}</span>` : ''}
       </div>
       <div class="desc">${b.address || 'No address on file'}${b.website?` · <a href="${b.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+      ${matchedList}
     </div>`;
   }
 
@@ -211,7 +215,7 @@
       breweryData.breweries.forEach(b=>{
         const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--brewery);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
         const m = L.marker([b.lat,b.lng],{icon}).addTo(breweryLayer);
-        m.bindPopup(`<b>🍺 ${b.name}</b><br>${b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount} reviews)` : 'No rating yet'}<br>${b.address || ''}`);
+        m.bindPopup(`<b>🍺 ${b.name}</b><br>${b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount} reviews)` : 'No rating yet'}${b.keywordMatchCount > 0 ? ` · 🎯 ${b.keywordMatchCount}/7` : ''}<br>${b.address || ''}`);
         bounds.push([b.lat,b.lng]);
       });
     }
