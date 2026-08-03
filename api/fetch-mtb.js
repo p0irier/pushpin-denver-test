@@ -170,17 +170,25 @@ async function fetchTrails(bbox) {
     const displayName = names.length > 0 ? names[0] : 'Unnamed trail network';
     const nameNote = names.length > 1 ? ` (+ ${names.length - 1} other name(s) in this network)` : '';
 
+    // Back to a single dot per cluster — per direction, drawing every
+    // segment's real shape was too visually distracting. Centroid computed
+    // across ALL points in the cluster (not just one way's first point) so
+    // the dot lands somewhere reasonably central to the whole network.
+    const allPoints = clusterWays.flatMap(w => w.geometry);
+    const centroidLat = allPoints.reduce((sum, p) => sum + p.lat, 0) / allPoints.length;
+    const centroidLon = allPoints.reduce((sum, p) => sum + p.lon, 0) / allPoints.length;
+
     trails.push({
       name: displayName + nameNote,
+      lat: centroidLat,
+      lon: centroidLon,
       difficultyImba: imba,
       difficultyLabel: imba !== null ? IMBA_LABELS[imba] : 'Unrated',
       distanceMiles: totalMiles,
       segmentCount: clusterWays.length,
       description: imba !== null
         ? `Singletrack network, ${IMBA_LABELS[imba]}, ${totalMiles} mi total`
-        : `Singletrack network, difficulty unrated, ${totalMiles} mi total`,
-      // Full geometry kept this time — the whole point is showing real shape.
-      geometry: clusterWays.map(w => w.geometry.map(pt => ({ lat: pt.lat, lon: pt.lon })))
+        : `Singletrack network, difficulty unrated, ${totalMiles} mi total`
     });
   }
   return trails;

@@ -128,16 +128,29 @@ async function fetchTrails(bbox) {
   return trails;
 }
 
+// Hiking is low-priority and has no quality signal (sac_scale too sparse to
+// rank on) — per direction, only surface the top 10% by distance, on the
+// theory that longer/more substantial trails are more likely to be worth
+// showing than a long tail of short named paths.
+function keepTop10PercentByDistance(trails) {
+  if (trails.length === 0) return trails;
+  const sorted = [...trails].sort((a, b) => b.distanceMiles - a.distanceMiles);
+  const keepCount = Math.max(1, Math.ceil(sorted.length * 0.1));
+  return sorted.slice(0, keepCount);
+}
+
 module.exports = async (req, res) => {
   const regionKey = (req.query && req.query.region) || 'denver';
   const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const trails = await fetchTrails(bbox);
+    const allTrails = await fetchTrails(bbox);
+    const trails = keepTop10PercentByDistance(allTrails);
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
       bbox,
       minTrailMiles: MIN_TRAIL_MILES,
+      totalFound: allTrails.length,
       trails
     });
   } catch (e) {
