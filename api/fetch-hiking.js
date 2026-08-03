@@ -12,7 +12,7 @@
 // add caching (Vercel KV/Blob) keyed by region before relying on it at scale.
 
 const HIKING_BBOX = { south: 39.55, west: -105.35, north: 39.85, east: -105.05 };
-const MIN_TRAIL_MILES = 0.3;
+const MIN_TRAIL_MILES = 3;
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',

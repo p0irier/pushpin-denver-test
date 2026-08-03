@@ -1,32 +1,24 @@
 // fetch-hiking.js
 // Run locally: node scripts/fetch-hiking.js
 //
-// v2 — switched from raw named path/footway/track ways (1,229 results, way too
-// noisy — mostly short fragments of the same trail split across many OSM ways)
-// to named `route=hiking` RELATIONS instead.
+// v3 — back to querying named path/footway/track WAYS (broader coverage than
+// v2's route relations, which only returned 16 for Denver-metro — too sparse).
+// But instead of rendering every segment as a polyline (v1's problem: 1,229
+// segments, way too cluttered), this version GROUPS segments by name and
+// collapses each trail down to ONE point on the map + one card.
 //
-// Why this is better, not just different:
-// - A route relation only exists because someone deliberately assembled an
-//   official, maintained trail route — so this is a real (if imperfect) proxy
-//   for "this is a real hike," not just "this is a walkable path."
-// - It also solves the segment-duplication problem as a side effect: all of a
-//   relation's member ways are grouped under ONE trail entry (one card, one
-//   name), with multiple line segments under the hood for the map.
-// - Coverage is sparser than raw ways, though — not every real trail has been
-//   assembled into a relation. This script logs the count so we can judge
-//   whether that tradeoff is acceptable per-region.
+// Distance is still summed across all of a trail's segments (so the stat is
+// accurate), but the map only gets a single representative pin per trail —
+// per current direction: "just use name and put that pin in the map, I don't
+// need the trail route."
 //
-// Also applies a minimum length filter (drop anything under MIN_TRAIL_MILES)
-// to catch short/junk relations that aren't real hikes.
-//
-// sac_scale is still enrichment only, never a filter (see v1 notes) — most
-// trails simply won't have it tagged, and that's normal.
+// Still named-only, still a length filter, sac_scale still enrichment-only.
 
 const fs = require('fs');
 const path = require('path');
 
 const HIKING_BBOX = { south: 39.55, west: -105.35, north: 39.85, east: -105.05 };
-const MIN_TRAIL_MILES = 0.3; // drop short/junk relations below this
+const MIN_TRAIL_MILES = 3;
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -88,73 +80,61 @@ function segmentLengthMiles(geometry) {
 
 async function fetchTrails() {
   const bboxStr = `${HIKING_BBOX.south},${HIKING_BBOX.west},${HIKING_BBOX.north},${HIKING_BBOX.east}`;
-  // Fetch the relations themselves, then recurse (">;") to pull in their
-  // member ways/nodes, then output geometry for everything.
   const query = `
-    [out:json][timeout:90];
+    [out:json][timeout:60];
     (
-      relation["route"="hiking"]["name"](${bboxStr});
+      way["highway"="path"]["name"](${bboxStr});
+      way["highway"="footway"]["name"](${bboxStr});
+      way["highway"="track"]["name"]["foot"!="no"](${bboxStr});
     );
-    out body;
-    >;
     out geom;
   `;
-  const data = await overpassRequest(query, 'Denver hiking relations bbox');
-  const elements = data.elements || [];
+  const data = await overpassRequest(query, 'Denver hiking ways bbox');
 
-  // Index all ways by id so relation members can look up their geometry.
-  const wayById = {};
-  for (const el of elements) {
-    if (el.type === 'way' && el.geometry) wayById[el.id] = el;
+  // Group raw segments by name.
+  const byName = {};
+  for (const el of data.elements || []) {
+    if (el.type !== 'way' || !el.tags || !el.tags.name || !el.geometry || el.geometry.length < 2) continue;
+    const name = el.tags.name;
+    if (!byName[name]) byName[name] = { segments: [], sacScale: null };
+    byName[name].segments.push(el.geometry);
+    if (!byName[name].sacScale && el.tags.sac_scale && SAC_SCALE_LABELS[el.tags.sac_scale]) {
+      byName[name].sacScale = SAC_SCALE_LABELS[el.tags.sac_scale];
+    }
   }
 
   const trails = [];
-  for (const el of elements) {
-    if (el.type !== 'relation' || !el.tags || !el.tags.name) continue;
-
-    const segments = [];
-    for (const member of el.members || []) {
-      if (member.type !== 'way') continue;
-      const way = wayById[member.ref];
-      if (way && way.geometry && way.geometry.length >= 2) {
-        segments.push(way.geometry.map(pt => ({ lat: pt.lat, lon: pt.lon })));
-      }
-    }
-    if (segments.length === 0) continue; // relation had no usable geometry
-
+  for (const [name, group] of Object.entries(byName)) {
     const totalMiles = Math.round(
-      segments.reduce((sum, seg) => sum + segmentLengthMiles(seg), 0) * 100
+      group.segments.reduce((sum, seg) => sum + segmentLengthMiles(seg), 0) * 100
     ) / 100;
+    if (totalMiles < MIN_TRAIL_MILES) continue;
 
-    if (totalMiles < MIN_TRAIL_MILES) continue; // length filter
-
-    const sacKey = el.tags.sac_scale;
-    const sacLabel = sacKey && SAC_SCALE_LABELS[sacKey] ? SAC_SCALE_LABELS[sacKey] : null;
+    // Representative point: first point of the first (typically longest-ish,
+    // but really just first-encountered) segment. Good enough for a pin.
+    const point = group.segments[0][0];
 
     trails.push({
-      id: el.id,
-      name: el.tags.name,
+      name,
+      lat: point.lat,
+      lon: point.lon,
       distanceMiles: totalMiles,
-      sacScale: sacLabel,
-      segmentCount: segments.length,
-      description: sacLabel
-        ? `Hiking trail, ${sacLabel}, ${totalMiles} mi`
-        : `Hiking trail, ${totalMiles} mi`,
-      geometry: segments // array of segments, each an array of {lat,lon} points
+      sacScale: group.sacScale,
+      segmentCount: group.segments.length,
+      description: group.sacScale
+        ? `Hiking trail, ${group.sacScale}, ${totalMiles} mi total`
+        : `Hiking trail, ${totalMiles} mi total`
     });
   }
   return trails;
 }
 
 async function main() {
-  console.log('Fetching named hiking ROUTE RELATIONS from Overpass for Denver metro/foothills bbox...');
+  console.log('Fetching named hiking ways from Overpass, grouping by name into single pins...');
   const trails = await fetchTrails();
-  console.log(`Got ${trails.length} named trail relations (min length ${MIN_TRAIL_MILES} mi).`);
+  console.log(`Got ${trails.length} unique named trails (min length ${MIN_TRAIL_MILES} mi total).`);
   const withSac = trails.filter(t => t.sacScale).length;
   console.log(`  ${withSac} of ${trails.length} have a sac_scale tag.`);
-  if (trails.length < 15) {
-    console.log('  Note: low count likely means relation coverage is sparse for this region — worth deciding if that tradeoff is acceptable or if raw-way fallback is needed.');
-  }
 
   const output = { generatedAt: new Date().toISOString(), bbox: HIKING_BBOX, minTrailMiles: MIN_TRAIL_MILES, trails };
   const outPath = path.join(__dirname, '..', 'public', 'data', 'hiking-denver.json');
