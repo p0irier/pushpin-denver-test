@@ -104,25 +104,39 @@ async function fetchTrails(bbox) {
   `;
   const data = await overpassRequest(query);
   const ways = (data.elements || []).filter(
-    el => el.type === 'way' && el.geometry && el.geometry.length >= 2 && el.nodes && el.nodes.length >= 2
+    el => el.type === 'way' && el.geometry && el.geometry.length >= 2
   );
   if (ways.length === 0) return [];
 
-  // Cluster ways whose endpoints touch the same OSM node ID — a real,
-  // reliable signal they're physically connected, unlike comparing lat/lon
-  // floats. A way's first/last entries in `nodes` are its endpoint node IDs.
+  // v2 clustering: exact shared-node-ID matching (v1) barely merged anything
+  // in testing — real-world OSM trail data is often NOT perfectly snapped
+  // between segments mapped by different contributors at different times,
+  // even when they're visually the same physical trail. Switched to
+  // PROXIMITY matching instead: two ways are considered connected if any of
+  // their endpoints are within CONNECT_TOLERANCE_METERS of each other. More
+  // forgiving of imperfect topology, at the cost of a small risk of merging
+  // trails that just happen to pass close to each other without truly
+  // connecting (e.g. a switchback near a parallel trail).
+  const CONNECT_TOLERANCE_METERS = 25;
+
+  const endpoints = ways.map(w => ({
+    start: w.geometry[0],
+    end: w.geometry[w.geometry.length - 1]
+  }));
+
   const uf = makeUnionFind(ways.length);
-  const endpointToWayIndex = {}; // nodeId -> [wayIndex, ...]
-  ways.forEach((w, i) => {
-    const firstNode = w.nodes[0], lastNode = w.nodes[w.nodes.length - 1];
-    [firstNode, lastNode].forEach(nodeId => {
-      if (!endpointToWayIndex[nodeId]) endpointToWayIndex[nodeId] = [];
-      endpointToWayIndex[nodeId].push(i);
-    });
-  });
-  Object.values(endpointToWayIndex).forEach(indices => {
-    for (let i = 1; i < indices.length; i++) uf.union(indices[0], indices[i]);
-  });
+  for (let i = 0; i < ways.length; i++) {
+    for (let j = i + 1; j < ways.length; j++) {
+      const pairs = [
+        [endpoints[i].start, endpoints[j].start],
+        [endpoints[i].start, endpoints[j].end],
+        [endpoints[i].end, endpoints[j].start],
+        [endpoints[i].end, endpoints[j].end]
+      ];
+      const connected = pairs.some(([a, b]) => haversineMeters(a, b) <= CONNECT_TOLERANCE_METERS);
+      if (connected) uf.union(i, j);
+    }
+  }
 
   // Group way indices by cluster root.
   const clusters = {};

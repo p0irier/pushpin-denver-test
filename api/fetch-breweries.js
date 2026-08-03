@@ -1,89 +1,108 @@
 // api/fetch-breweries.js
-// Vercel serverless function — GET /api/fetch-breweries.
+// Vercel serverless function — GET /api/fetch-breweries?region=denver|norway
 //
-// v2 — FIXED A REAL SCOPING BUG: v1 used by_city=Denver, a literal string
-// match against each brewery's city field. That silently excluded any
-// brewery in Golden, Frisco, Breckenridge, Idaho Springs, etc. — i.e.
-// EVERYTHING near the MTB trails or ski resorts, since none of those towns
-// are named "Denver." Ski/MTB/hiking all use geographic bounding boxes;
-// breweries needs to match that paradigm, not a city-name string.
+// v3 — SWITCHED from Open Brewery DB to Google Places API (New) Text Search.
+// Open Brewery DB had no rating/review data at all — a hard blocker for the
+// "picks for you" scoring feature, since we'd have no quality signal to rank
+// on. Google Places gives real rating + review count, which is exactly what
+// scoring needs.
 //
-// Open Brewery DB has no native bbox parameter, so instead: pull ALL
-// Colorado breweries in one call (by_state), then filter by lat/lon against
-// a combined bbox covering both the metro/foothills area AND the ski resort
-// spread. This is the same "geographic area of interest" concept the other
-// three categories already use.
+// Bonus: businessStatus (OPERATIONAL / CLOSED_TEMPORARILY / CLOSED_PERMANENTLY)
+// solves the "filter out closed/planning breweries" item from the backlog
+// more reliably than Open Brewery DB's community-maintained type tag did —
+// this is live business status, not a possibly-stale community edit.
+//
+// REQUIRES an env var: GOOGLE_PLACES_API_KEY, set in Vercel project settings
+// (Settings -> Environment Variables), never committed to the repo. The key
+// stays entirely server-side — this function calls Google, the browser never
+// sees the key.
+//
+// Known scope limit: single page, up to 20 results per region. Google Places
+// (New) Text Search supports pagination up to 60 total (3 pages) — not
+// implemented yet, worth adding if 20 proves too few for a region.
 
-const PER_PAGE = 200;
-
-// Each region defines which Open Brewery DB filter to use, plus the bbox to
-// geo-filter against afterward. Denver stays on by_state (Colorado is small,
-// fast, few pages). Norway has no state-equivalent to filter on, so it uses
-// by_country instead — slower/bigger pull, but still far smaller than
-// pulling worldwide.
 const REGIONS = {
-  denver: {
-    filterParam: 'by_state',
-    filterValue: 'Colorado',
-    bbox: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 }
-  },
-  norway: {
-    filterParam: 'by_country',
-    filterValue: 'Norway',
-    bbox: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
-  }
+  denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
+  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
 };
 
-async function fetchAllPages(filterParam, filterValue) {
-  const results = [];
-  let page = 1;
-  while (true) {
-    const url = `https://api.openbrewerydb.org/v1/breweries?${filterParam}=${encodeURIComponent(filterValue)}&per_page=${PER_PAGE}&page=${page}`;
-    const resp = await fetch(url, { headers: { 'Accept': 'application/json' } });
-    if (!resp.ok) throw new Error(`Open Brewery DB returned ${resp.status} on page ${page}`);
-    const batch = await resp.json();
-    if (!Array.isArray(batch) || batch.length === 0) break;
-    results.push(...batch);
-    if (batch.length < PER_PAGE) break;
-    page++;
+async function searchBreweries(bbox) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    throw new Error('GOOGLE_PLACES_API_KEY environment variable is not set in Vercel project settings');
   }
-  return results;
-}
 
-function cleanBrewery(b) {
-  return {
-    id: b.id,
-    name: b.name,
-    breweryType: b.brewery_type || null,
-    address: [b.address_1, b.city, b.state_province, b.postal_code].filter(Boolean).join(', '),
-    lat: b.latitude !== null && b.latitude !== undefined ? parseFloat(b.latitude) : null,
-    lng: b.longitude !== null && b.longitude !== undefined ? parseFloat(b.longitude) : null,
-    phone: b.phone || null,
-    website: b.website_url || null
+  const body = {
+    textQuery: 'craft brewery',
+    maxResultCount: 20,
+    locationRestriction: {
+      rectangle: {
+        low: { latitude: bbox.south, longitude: bbox.west },
+        high: { latitude: bbox.north, longitude: bbox.east }
+      }
+    }
   };
+
+  const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': [
+        'places.displayName',
+        'places.formattedAddress',
+        'places.location',
+        'places.rating',
+        'places.userRatingCount',
+        'places.types',
+        'places.websiteUri',
+        'places.nationalPhoneNumber',
+        'places.businessStatus'
+      ].join(',')
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`Google Places returned ${resp.status}: ${errText.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+  return data.places || [];
 }
 
-function withinBbox(b, bbox) {
-  return b.lat >= bbox.south && b.lat <= bbox.north && b.lng >= bbox.west && b.lng <= bbox.east;
+function cleanPlace(p) {
+  return {
+    name: p.displayName ? p.displayName.text : 'Unknown',
+    address: p.formattedAddress || null,
+    lat: p.location ? p.location.latitude : null,
+    lng: p.location ? p.location.longitude : null,
+    rating: typeof p.rating === 'number' ? p.rating : null,
+    ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : 0,
+    website: p.websiteUri || null,
+    phone: p.nationalPhoneNumber || null,
+    businessStatus: p.businessStatus || 'OPERATIONAL'
+  };
 }
 
 module.exports = async (req, res) => {
   const regionKey = (req.query && req.query.region) || 'denver';
-  const region = REGIONS[regionKey] || REGIONS.denver;
+  const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const raw = await fetchAllPages(region.filterParam, region.filterValue);
-    const cleaned = raw
-      .map(cleanBrewery)
+    const rawPlaces = await searchBreweries(bbox);
+    const cleaned = rawPlaces
+      .map(cleanPlace)
       .filter(b => b.lat !== null && b.lng !== null)
-      .filter(b => withinBbox(b, region.bbox));
+      .filter(b => b.businessStatus === 'OPERATIONAL'); // drop closed/temporarily-closed automatically
+
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
-      bbox: region.bbox,
-      totalPulled: raw.length,
+      bbox,
+      totalPulled: rawPlaces.length,
       breweries: cleaned
     });
   } catch (e) {
-    res.status(502).json({ error: 'Open Brewery DB request failed', detail: e.message });
+    res.status(502).json({ error: 'Google Places request failed', detail: e.message });
   }
 };
