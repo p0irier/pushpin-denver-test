@@ -121,12 +121,13 @@
   }
 
   function mtbCardHtml(t){
-    const flyPt = t.geometry[0];
+    const flyPt = t.geometry[0][0];
     return `<div class="card" style="border-left-color:var(--mtb)" data-fly="${flyPt.lat},${flyPt.lon}">
       <div class="name">🚵 ${t.name}</div>
       <div class="stat-row">
         <span>${t.difficultyLabel}</span>
         <span>${t.distanceMiles} mi</span>
+        <span>${t.segmentCount} segments</span>
       </div>
       <div class="desc">${t.description}</div>
     </div>`;
@@ -195,11 +196,14 @@
     }
     if(activeCats.has('mtb')){
       mtbData.trails.forEach(t=>{
-        const latlngs = t.geometry.map(p=>[p.lat,p.lon]);
         const color = t.difficultyImba!==null ? imbaColor(t.difficultyImba) : '#999';
-        const line = L.polyline(latlngs, {color, weight:4, opacity:0.85}).addTo(mtbLayer);
-        line.bindPopup(`<b>🚵 ${t.name}</b><br>${t.difficultyLabel} · ${t.distanceMiles} mi`);
-        latlngs.forEach(ll=>bounds.push(ll));
+        const popupHtml = `<b>🚵 ${t.name}</b><br>${t.difficultyLabel} · ${t.distanceMiles} mi · ${t.segmentCount} connected segments`;
+        t.geometry.forEach(segment=>{
+          const latlngs = segment.map(p=>[p.lat,p.lon]);
+          const line = L.polyline(latlngs, {color, weight:4, opacity:0.85}).addTo(mtbLayer);
+          line.bindPopup(popupHtml);
+          latlngs.forEach(ll=>bounds.push(ll));
+        });
       });
     }
     if(activeCats.has('brewery')){

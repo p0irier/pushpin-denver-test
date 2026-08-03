@@ -17,13 +17,15 @@ const REGIONS = {
 };
 const MIN_TRAIL_MILES = 3;
 
-// Reordered: private.coffee's mirror explicitly advertises no rate limits and
-// has been the most consistently responsive tonight. overpass-api.de kept as
-// fallback since it's the "main" instance despite recent reported flakiness.
+// REVERTED: private.coffee as primary caused all three Overpass-based
+// categories to time out at exactly 60s (Vercel's cap) in testing — strong
+// signal it was down/hanging at that moment, not just slower. Back to
+// overpass-api.de first (proven working tonight), private.coffee demoted to
+// a fallback rather than trusted as primary without real uptime monitoring.
 const OVERPASS_ENDPOINTS = [
-  'https://overpass.private.coffee/api/interpreter',
   'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter'
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
 ];
 
 const SAC_SCALE_LABELS = {
