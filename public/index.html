@@ -12,7 +12,7 @@
     --ink:#1c2b24; --paper:#eee7d6; --paper-dim:#e2d9c2;
     --pine:#20463c; --pine-deep:#123028; --ochre:#b9832e; --ochre-dim:#dcb877;
     --teal:#2c6e6a; --rust:#9c4a2c; --line:#c9bd9e; --white:#fdfbf4;
-    --ski:#1b6ca8; --mtb:#2e8b3d; --brewery:#d9822b; --hiking:#7a5195;
+    --ski:#1b6ca8; --mtb:#2e8b3d; --brewery:#d9822b; --hiking:#7a5195; --bars:#a02c5c; --pinball:#1c8c7a; --food:#c94f3d; --yarn:#b5548c; --historical:#8a6d3b;
   }
   *{box-sizing:border-box;}
   html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);font-family:'Inter',sans-serif;height:100%;overflow:hidden;}
@@ -45,7 +45,7 @@
 <body>
 <div id="app">
   <header>
-    <div class="brand"><h1>Pushpin</h1><span>Denver test · ski + mtb + breweries + hiking</span></div>
+    <div class="brand"><h1>Pushpin</h1><span>Denver test · 9 categories</span></div>
     <div class="meta" id="metaInfo">Loading…</div>
   </header>
   <main>
@@ -61,6 +61,11 @@
           <div class="chip" data-cat="ski" style="color:var(--ski);border-color:var(--ski);">⛷️ Ski resorts</div>
           <div class="chip" data-cat="mtb" style="color:var(--mtb);border-color:var(--mtb);">🚵 MTB trails</div>
           <div class="chip" data-cat="brewery" style="color:var(--brewery);border-color:var(--brewery);">🍺 Breweries</div>
+          <div class="chip" data-cat="bars" style="color:var(--bars);border-color:var(--bars);">🍸 Bars/Pubs</div>
+          <div class="chip" data-cat="pinball" style="color:var(--pinball);border-color:var(--pinball);">🕹️ Pinball/Arcade</div>
+          <div class="chip" data-cat="food" style="color:var(--food);border-color:var(--food);">🍽️ Food</div>
+          <div class="chip" data-cat="yarn" style="color:var(--yarn);border-color:var(--yarn);">🧶 Yarn Shops</div>
+          <div class="chip" data-cat="historical" style="color:var(--historical);border-color:var(--historical);">🏛️ Historical</div>
           <div class="chip" data-cat="hiking" style="color:var(--hiking);border-color:var(--hiking);">🥾 Hiking</div>
         </div>
         <div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">
@@ -72,6 +77,11 @@
           <button class="refresh-btn" data-refresh="mtb" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--mtb);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh MTB only</button>
           <button class="refresh-btn" data-refresh="brewery" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--brewery);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh breweries only</button>
           <button class="refresh-btn" data-refresh="hiking" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--hiking);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh hiking only</button>
+          <button class="refresh-btn" data-refresh="bars" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--bars);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh bars only</button>
+          <button class="refresh-btn" data-refresh="pinball" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--pinball);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh pinball only</button>
+          <button class="refresh-btn" data-refresh="food" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--food);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh food only</button>
+          <button class="refresh-btn" data-refresh="yarn" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--yarn);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh yarn only</button>
+          <button class="refresh-btn" data-refresh="historical" style="font-size:11.5px;font-family:'JetBrains Mono',monospace;background:var(--historical);color:#fdfbf4;border:none;border-radius:4px;padding:6px 10px;cursor:pointer;">🔄 Refresh historical only</button>
         </div>
       </div>
       <div class="locations">
@@ -88,9 +98,14 @@
   let skiData = { resorts: [] };
   let mtbData = { trails: [] };
   let breweryData = { breweries: [] };
+  let barsData = { bars: [] };
+  let pinballData = { pinball: [] };
+  let foodData = { food: [] };
+  let yarnData = { yarn: [] };
+  let historicalData = { historical: [] };
   let hikingData = { trails: [] };
-  let activeCats = new Set(['ski','mtb','brewery','hiking']);
-  let map, skiLayer, mtbLayer, breweryLayer, hikingLayer;
+  let activeCats = new Set(['ski','mtb','brewery','hiking','bars','pinball','food','yarn','historical']);
+  let map, skiLayer, mtbLayer, breweryLayer, hikingLayer, barsLayer, pinballLayer, foodLayer, yarnLayer, historicalLayer;
 
   function initMap(){
     map = L.map('map').setView([39.65, -105.7], 9);
@@ -98,6 +113,11 @@
     skiLayer = L.layerGroup().addTo(map);
     mtbLayer = L.layerGroup().addTo(map);
     breweryLayer = L.layerGroup().addTo(map);
+    barsLayer = L.layerGroup().addTo(map);
+    pinballLayer = L.layerGroup().addTo(map);
+    foodLayer = L.layerGroup().addTo(map);
+    yarnLayer = L.layerGroup().addTo(map);
+    historicalLayer = L.layerGroup().addTo(map);
     hikingLayer = L.layerGroup().addTo(map);
   }
 
@@ -131,6 +151,76 @@
       <div class="desc">${t.description}</div>
     </div>`;
   }
+
+  function barsCardHtml(b){
+    const ratingText = b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount})` : 'No rating yet';
+    const matchText = b.keywordMatchCount > 0 ? `🎯 ${b.keywordMatchCount}/7 terms` : '';
+    const matchedList = b.keywordsMatched && b.keywordsMatched.length ? `<div class="desc" style="margin-top:4px;font-style:italic;">Matched: ${b.keywordsMatched.join(', ')}</div>` : '';
+    return `<div class="card" style="border-left-color:var(--bars)" data-fly="${b.lat},${b.lng}">
+      <div class="name">🍸 ${b.name}</div>
+      <div class="stat-row">
+        <span>${ratingText}</span>
+        ${matchText ? `<span>${matchText}</span>` : ''}
+      </div>
+      <div class="desc">${b.address || 'No address on file'}${b.website?` · <a href="${b.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+      ${matchedList}
+    </div>`;
+  }
+
+  function pinballCardHtml(p){
+    const ratingText = p.rating !== null ? `⭐ ${p.rating} (${p.ratingCount})` : 'No rating yet';
+    return `<div class="card" style="border-left-color:var(--pinball)" data-fly="${p.lat},${p.lng}">
+      <div class="name">🕹️ ${p.name}</div>
+      <div class="stat-row">
+        <span>${ratingText}</span>
+      </div>
+      <div class="desc">${p.address || 'No address on file'}${p.website?` · <a href="${p.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+    </div>`;
+  }
+
+  function yarnCardHtml(y){
+    const ratingText = y.rating !== null ? `⭐ ${y.rating} (${y.ratingCount})` : 'No rating yet';
+    return `<div class="card" style="border-left-color:var(--yarn)" data-fly="${y.lat},${y.lng}">
+      <div class="name">🧶 ${y.name}</div>
+      <div class="stat-row">
+        <span>${ratingText}</span>
+      </div>
+      <div class="desc">${y.address || 'No address on file'}${y.website?` · <a href="${y.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+    </div>`;
+  }
+
+  function historicalCardHtml(h){
+    const ratingText = h.rating !== null ? `⭐ ${h.rating} (${h.ratingCount})` : 'No rating yet';
+    const descText = h.description || h.address || 'No description on file';
+    return `<div class="card" style="border-left-color:var(--historical)" data-fly="${h.lat},${h.lng}">
+      <div class="name">🏛️ ${h.name}</div>
+      <div class="stat-row">
+        <span>${ratingText}</span>
+        <span>${h.matchedType.replace(/_/g,' ')}</span>
+      </div>
+      <div class="desc">${descText}</div>
+      ${h.description ? `<div class="desc" style="margin-top:2px;font-size:11px;color:#8a8266;">${h.address || ''}${h.website?` · <a href="${h.website}" target="_blank" rel="noopener">website</a>`:''}</div>` : ''}
+    </div>`;
+  }
+
+  const MEAL_ICONS = { breakfast: '🍳', lunch: '🥪', dinner: '🍽️' };
+  function foodCardHtml(f){
+    const ratingText = f.rating !== null ? `⭐ ${f.rating} (${f.ratingCount})` : 'No rating yet';
+    const matchText = f.keywordMatchCount > 0 ? `🎯 ${f.keywordMatchCount}/5 terms` : '';
+    const matchedList = f.keywordsMatched && f.keywordsMatched.length ? `<div class="desc" style="margin-top:4px;font-style:italic;">Matched: ${f.keywordsMatched.join(', ')}</div>` : '';
+    const mealIcon = MEAL_ICONS[f.mealType] || '🍽️';
+    return `<div class="card" style="border-left-color:var(--food)" data-fly="${f.lat},${f.lng}">
+      <div class="name">${mealIcon} ${f.name}</div>
+      <div class="stat-row">
+        <span>${f.mealType}</span>
+        <span>${ratingText}</span>
+        ${matchText ? `<span>${matchText}</span>` : ''}
+      </div>
+      <div class="desc">${f.address || 'No address on file'}${f.website?` · <a href="${f.website}" target="_blank" rel="noopener">website</a>`:''}</div>
+      ${matchedList}
+    </div>`;
+  }
+
 
   function breweryCardHtml(b){
     const ratingText = b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount})` : 'No rating yet';
@@ -170,8 +260,28 @@
       else html += mtbData.trails.map(mtbCardHtml).join('');
     }
     if(activeCats.has('brewery')){
-      if(breweryData.breweries.length===0) html += `<div class="empty-note">No brewery data yet — run <b>npm run fetch:breweries</b> locally and redeploy.</div>`;
+      if(breweryData.breweries.length===0) html += `<div class="empty-note">No brewery data yet — click Refresh breweries.</div>`;
       else html += breweryData.breweries.map(breweryCardHtml).join('');
+    }
+    if(activeCats.has('bars')){
+      if(barsData.bars.length===0) html += `<div class="empty-note">No bars/pubs data yet — click Refresh bars.</div>`;
+      else html += barsData.bars.map(barsCardHtml).join('');
+    }
+    if(activeCats.has('pinball')){
+      if(pinballData.pinball.length===0) html += `<div class="empty-note">No pinball/arcade data yet — click Refresh pinball.</div>`;
+      else html += pinballData.pinball.map(pinballCardHtml).join('');
+    }
+    if(activeCats.has('food')){
+      if(foodData.food.length===0) html += `<div class="empty-note">No food data yet — click Refresh food.</div>`;
+      else html += foodData.food.map(foodCardHtml).join('');
+    }
+    if(activeCats.has('yarn')){
+      if(yarnData.yarn.length===0) html += `<div class="empty-note">No yarn shop data yet — click Refresh yarn.</div>`;
+      else html += yarnData.yarn.map(yarnCardHtml).join('');
+    }
+    if(activeCats.has('historical')){
+      if(historicalData.historical.length===0) html += `<div class="empty-note">No historical/discovery data yet — click Refresh historical.</div>`;
+      else html += historicalData.historical.map(historicalCardHtml).join('');
     }
     if(activeCats.has('hiking')){
       if(hikingData.trails.length===0) html += `<div class="empty-note">No hiking data yet — run <b>npm run fetch:hiking</b> locally and redeploy.</div>`;
@@ -215,6 +325,46 @@
         bounds.push([b.lat,b.lng]);
       });
     }
+    if(activeCats.has('bars')){
+      barsData.bars.forEach(b=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--bars);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([b.lat,b.lng],{icon}).addTo(barsLayer);
+        m.bindPopup(`<b>🍸 ${b.name}</b><br>${b.rating !== null ? `⭐ ${b.rating} (${b.ratingCount} reviews)` : 'No rating yet'}${b.keywordMatchCount > 0 ? ` · 🎯 ${b.keywordMatchCount}/7` : ''}<br>${b.address || ''}`);
+        bounds.push([b.lat,b.lng]);
+      });
+    }
+    if(activeCats.has('pinball')){
+      pinballData.pinball.forEach(p=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--pinball);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([p.lat,p.lng],{icon}).addTo(pinballLayer);
+        m.bindPopup(`<b>🕹️ ${p.name}</b><br>${p.rating !== null ? `⭐ ${p.rating} (${p.ratingCount} reviews)` : 'No rating yet'}<br>${p.address || ''}`);
+        bounds.push([p.lat,p.lng]);
+      });
+    }
+    if(activeCats.has('food')){
+      foodData.food.forEach(f=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--food);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([f.lat,f.lng],{icon}).addTo(foodLayer);
+        m.bindPopup(`<b>${MEAL_ICONS[f.mealType]||'🍽️'} ${f.name}</b><br>${f.mealType} · ${f.rating !== null ? `⭐ ${f.rating} (${f.ratingCount} reviews)` : 'No rating yet'}${f.keywordMatchCount > 0 ? ` · 🎯 ${f.keywordMatchCount}/5` : ''}<br>${f.address || ''}`);
+        bounds.push([f.lat,f.lng]);
+      });
+    }
+    if(activeCats.has('yarn')){
+      yarnData.yarn.forEach(y=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--yarn);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([y.lat,y.lng],{icon}).addTo(yarnLayer);
+        m.bindPopup(`<b>🧶 ${y.name}</b><br>${y.rating !== null ? `⭐ ${y.rating} (${y.ratingCount} reviews)` : 'No rating yet'}<br>${y.address || ''}`);
+        bounds.push([y.lat,y.lng]);
+      });
+    }
+    if(activeCats.has('historical')){
+      historicalData.historical.forEach(h=>{
+        const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:3px;background:var(--historical);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
+        const m = L.marker([h.lat,h.lng],{icon}).addTo(historicalLayer);
+        m.bindPopup(`<b>🏛️ ${h.name}</b><br>${h.description || (h.rating !== null ? `⭐ ${h.rating} (${h.ratingCount} reviews)` : 'No rating yet')}<br>${h.address || ''}`);
+        bounds.push([h.lat,h.lng]);
+      });
+    }
     if(activeCats.has('hiking')){
       hikingData.trails.forEach(t=>{
         const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:50%;background:var(--hiking);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
@@ -248,7 +398,12 @@
     ski:     { endpoint: '/api/fetch-ski',       apply: d => { skiData = d; }, count: () => skiData.resorts.length },
     mtb:     { endpoint: '/api/fetch-mtb',       apply: d => { mtbData = d; }, count: () => mtbData.trails.length },
     brewery: { endpoint: '/api/fetch-breweries', apply: d => { breweryData = d; }, count: () => breweryData.breweries.length },
-    hiking:  { endpoint: '/api/fetch-hiking',    apply: d => { hikingData = d; }, count: () => hikingData.trails.length }
+    hiking:  { endpoint: '/api/fetch-hiking',    apply: d => { hikingData = d; }, count: () => hikingData.trails.length },
+    bars:    { endpoint: '/api/fetch-bars',      apply: d => { barsData = d; }, count: () => barsData.bars.length },
+    pinball: { endpoint: '/api/fetch-pinball',   apply: d => { pinballData = d; }, count: () => pinballData.pinball.length },
+    food:    { endpoint: '/api/fetch-food',      apply: d => { foodData = d; }, count: () => foodData.food.length },
+    yarn:    { endpoint: '/api/fetch-yarn',      apply: d => { yarnData = d; }, count: () => yarnData.yarn.length },
+    historical: { endpoint: '/api/fetch-historical', apply: d => { historicalData = d; }, count: () => historicalData.historical.length }
   };
 
   async function refreshOne(cat){
@@ -275,7 +430,7 @@
   document.getElementById('refreshAllBtn').addEventListener('click', ()=>{
     const btn = document.getElementById('refreshAllBtn');
     const statusEl = document.getElementById('loadTestStatus');
-    const cats = ['ski','mtb','brewery','hiking'];
+    const cats = ['ski','mtb','brewery','hiking','bars','pinball','food','yarn','historical'];
     btn.disabled = true;
     btn.textContent = '⚡ Firing all 4 concurrently...';
     const overallStart = performance.now();
@@ -302,7 +457,7 @@
           statusLines[cat] = `❌ ${cat}: FAILED after ${r.elapsedMs}ms — ${r.error}`;
         }
         paintStatus();
-        document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+        document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length + barsData.bars.length + pinballData.pinball.length + foodData.food.length + yarnData.yarn.length + historicalData.historical.length})`;
         render(); // repaint map/sidebar with whatever's arrived so far
 
         if(remaining === 0){
@@ -322,7 +477,7 @@
       btn.disabled = true;
       btn.textContent = '⏳ Fetching live (can take up to ~30-60s)...';
       const result = await refreshOne(cat);
-      document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length})`;
+      document.getElementById('listHeading').textContent = `Results (${skiData.resorts.length + mtbData.trails.length + breweryData.breweries.length + hikingData.trails.length + barsData.bars.length + pinballData.pinball.length + foodData.food.length + yarnData.yarn.length + historicalData.historical.length})`;
       render();
       if(result.ok){
         const failNote = result.failCount ? ` (${result.failCount} sub-failures)` : '';

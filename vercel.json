@@ -3,6 +3,11 @@
     "api/fetch-hiking.js": { "maxDuration": 60 },
     "api/fetch-mtb.js": { "maxDuration": 60 },
     "api/fetch-breweries.js": { "maxDuration": 30 },
-    "api/fetch-ski.js": { "maxDuration": 60 }
+    "api/fetch-ski.js": { "maxDuration": 60 },
+    "api/fetch-bars.js": { "maxDuration": 30 },
+    "api/fetch-pinball.js": { "maxDuration": 30 },
+    "api/fetch-food.js": { "maxDuration": 45 },
+    "api/fetch-yarn.js": { "maxDuration": 30 },
+    "api/fetch-historical.js": { "maxDuration": 45 }
   }
 }
