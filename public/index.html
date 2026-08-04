@@ -131,15 +131,12 @@
 
   function skiCardHtml(r){
     const ratingText = r.rating !== null ? `⭐ ${r.rating} (${r.ratingCount})` : 'No rating yet';
-    return `<div class="card" style="border-left-color:var(--ski)" data-fly="${r.lat},${r.lon}">
+    return `<div class="card" style="border-left-color:var(--ski)" data-fly="${r.lat},${r.lng}">
       <div class="name">⛷️ ${r.name}</div>
       <div class="stat-row">
         <span>${ratingText}</span>
-        <span>${r.sizeTier || 'Unknown'}</span>
-        <span>Avg diff ${r.difficultyAvg ?? 'N/A'}/5</span>
-        <span>${r.liftCount} lifts${r.gondolaCount?` (${r.gondolaCount} gondola/cabin)`:''}</span>
       </div>
-      <div class="desc">Vertical: N/A (not wired in this test)</div>
+      <div class="desc">${r.address || 'No address on file'}${r.website?` · <a href="${r.website}" target="_blank" rel="noopener">website</a>`:''}</div>
     </div>`;
   }
 
@@ -306,10 +303,10 @@
     const bounds = [];
     if(activeCats.has('ski')){
       skiData.resorts.forEach(r=>{
-        const icon = L.divIcon({className:'',html:`<div style="width:18px;height:18px;border-radius:50%;background:${tierColor(r.sizeTier)};border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[18,18],iconAnchor:[9,9]});
-        const m = L.marker([r.lat,r.lon],{icon}).addTo(skiLayer);
-        m.bindPopup(`<b>⛷️ ${r.name}</b><br>${r.rating !== null ? `⭐ ${r.rating} (${r.ratingCount} reviews)` : 'No rating yet'}<br>${r.sizeTier} · avg difficulty ${r.difficultyAvg ?? 'N/A'}/5<br>${r.liftCount} lifts`);
-        bounds.push([r.lat,r.lon]);
+        const icon = L.divIcon({className:'',html:`<div style="width:18px;height:18px;border-radius:50%;background:var(--ski);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[18,18],iconAnchor:[9,9]});
+        const m = L.marker([r.lat,r.lng],{icon}).addTo(skiLayer);
+        m.bindPopup(`<b>⛷️ ${r.name}</b><br>${r.rating !== null ? `⭐ ${r.rating} (${r.ratingCount} reviews)` : 'No rating yet'}<br>${r.address || ''}`);
+        bounds.push([r.lat,r.lng]);
       });
     }
     if(activeCats.has('mtb')){
