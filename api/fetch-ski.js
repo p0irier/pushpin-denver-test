@@ -1,43 +1,51 @@
 // api/fetch-ski.js
-// Vercel serverless function — GET /api/fetch-ski?region=denver|norway
+// Vercel serverless function — GET /api/fetch-ski?region=denver|norway|amsterdam
 //
-// v3 — REMOVED the hardcoded named resort list entirely. Resorts are now
-// DISCOVERED from OSM data itself, the same way MTB/hiking already work:
+// v4 — HYBRID: Google Places for discovery, Overpass for structured stats.
 //
-// Step 1: query the region bbox for named landuse=winter_sports areas —
-//         this is how OSM tags an actual ski area boundary. This IS the
-//         resort list now, found live, not typed in by us.
-// Step 2: for each discovered area, compute its own bounding box from its
-//         boundary geometry, then run the same combined piste/lift query
-//         as before — just against discovered boundaries instead of
-//         hand-picked resort centers.
+// Why: v3's pure-OSM discovery (landuse=winter_sports areas) missed resorts
+// mapped as multipolygon relations, surfaced backcountry-only areas as false
+// positives (needed a zero-lift filter patch), and had no rating signal at
+// all. Pure Google Places has the opposite problem: great discovery (real
+// `ski_resort` type, ratings), but zero structured data — no difficulty, no
+// lift count, nothing Overpass actually measures.
 //
-// Known limitation, stated honestly: this only catches resorts mapped as a
-// single closed WAY with landuse=winter_sports + a name. Resorts mapped as
-// multipolygon RELATIONS (common for larger/irregular resort shapes) are not
-// handled yet — that would need relation member recursion, not implemented
-// in this pass. If a region returns suspiciously few/zero resorts, this is
-// the first thing to check.
+// This version uses each system for what it's actually good at:
+//   Step 1: Google Places Text Search (includedType: ski_resort) finds
+//           candidates — real names, locations, ratings. This IS the
+//           resort list now, and it's a genuinely reliable "does this
+//           place exist and is it real" source, unlike OSM boundary tags.
+//   Step 2: build a SMALL bbox around each candidate's known-good point
+//           (not a blind citywide guess), then run ONE combined Overpass
+//           query across all those small boxes for real piste/lift data.
+//           This is an easier question for Overpass to answer than "find
+//           and cluster everything" — we already know where to look.
+//
+// Bonus: resorts now carry a real Google rating alongside difficulty/lifts,
+// which v3 never had.
+//
+// Known limitation: matching is by proximity (Places point falls in a small
+// box), not by name — a resort with genuinely sparse/missing OSM data near
+// its Places location will show 0 lifts and get filtered out, same as
+// before. Open-data coverage gaps are real; this doesn't erase them.
 
 const DIFF_MAP = {
   novice: 1, easy: 1, intermediate: 2, advanced: 3, expert: 4, freeride: 5, extreme: 5
 };
 const GONDOLA_TYPES = new Set(['gondola', 'mixed_lift', 'cable_car']);
 
-// Same region bboxes used by the other categories — the broader "area of
-// interest" a trip would cover, not a single resort's footprint.
 const REGIONS = {
   denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
   norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 },
   amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
 };
 
-const BOUNDARY_PAD_DEG = 0.01; // small margin so lifts/pistes just outside the exact drawn boundary still get caught
-// REVERTED: private.coffee as primary caused all three Overpass-based
-// categories to time out at exactly 60s (Vercel's cap) in testing — strong
-// signal it was down/hanging at that moment, not just slower. Back to
-// overpass-api.de first (proven working tonight), private.coffee demoted to
-// a fallback rather than trusted as primary without real uptime monitoring.
+// Small box around each Google Places candidate point — same scale as the
+// original hand-picked Denver resort boxes, tight enough to avoid pulling in
+// a neighboring resort's data (the known A-Basin/Keystone overlap risk).
+const CANDIDATE_LAT_PAD = 0.03;
+const CANDIDATE_LON_PAD = 0.04;
+
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -84,42 +92,68 @@ function wayLengthMeters(geometry) {
   return total;
 }
 
-// Step 1: discover named winter-sports areas within the region.
-async function discoverResortAreas(regionBbox) {
-  const bboxStr = `${regionBbox.south},${regionBbox.west},${regionBbox.north},${regionBbox.east}`;
-  const query = `
-    [out:json][timeout:40];
-    (
-      way["landuse"="winter_sports"]["name"](${bboxStr});
-    );
-    out geom;
-  `;
-  const data = await overpassRequest(query);
-  const areas = [];
-  for (const el of data.elements || []) {
-    if (el.type !== 'way' || !el.tags || !el.tags.name || !el.geometry || el.geometry.length === 0) continue;
-    const lats = el.geometry.map(p => p.lat);
-    const lons = el.geometry.map(p => p.lon);
-    areas.push({
-      name: el.tags.name,
-      south: Math.min(...lats) - BOUNDARY_PAD_DEG,
-      north: Math.max(...lats) + BOUNDARY_PAD_DEG,
-      west: Math.min(...lons) - BOUNDARY_PAD_DEG,
-      east: Math.max(...lons) + BOUNDARY_PAD_DEG,
-      lat: lats.reduce((a, b) => a + b, 0) / lats.length,
-      lon: lons.reduce((a, b) => a + b, 0) / lons.length
-    });
+// Step 1: discover candidates via Google Places.
+async function discoverResortCandidates(bbox) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    throw new Error('GOOGLE_PLACES_API_KEY environment variable is not set in Vercel project settings');
   }
-  return areas;
+
+  const body = {
+    textQuery: 'ski resort',
+    includedType: 'ski_resort',
+    maxResultCount: 20,
+    locationRestriction: {
+      rectangle: {
+        low: { latitude: bbox.south, longitude: bbox.west },
+        high: { latitude: bbox.north, longitude: bbox.east }
+      }
+    }
+  };
+
+  const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': [
+        'places.displayName',
+        'places.location',
+        'places.rating',
+        'places.userRatingCount',
+        'places.businessStatus'
+      ].join(',')
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`Google Places returned ${resp.status}: ${errText.slice(0, 300)}`);
+  }
+  const data = await resp.json();
+  return (data.places || [])
+    .filter(p => p.location && (p.businessStatus || 'OPERATIONAL') === 'OPERATIONAL')
+    .map(p => ({
+      name: p.displayName ? p.displayName.text : 'Unknown',
+      lat: p.location.latitude,
+      lon: p.location.longitude,
+      rating: typeof p.rating === 'number' ? p.rating : null,
+      ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : 0,
+      south: p.location.latitude - CANDIDATE_LAT_PAD,
+      north: p.location.latitude + CANDIDATE_LAT_PAD,
+      west: p.location.longitude - CANDIDATE_LON_PAD,
+      east: p.location.longitude + CANDIDATE_LON_PAD
+    }));
 }
 
-// Step 2: pull piste/lift data for all discovered areas in one combined query.
-async function fetchStatsForAreas(areas) {
-  if (areas.length === 0) return [];
+// Step 2: pull piste/lift data for all candidates in one combined Overpass query.
+async function fetchStatsForCandidates(candidates) {
+  if (candidates.length === 0) return [];
 
-  const clauses = areas.map(a => `
-      way["piste:type"="downhill"](${a.south},${a.west},${a.north},${a.east});
-      way["aerialway"](${a.south},${a.west},${a.north},${a.east});
+  const clauses = candidates.map(c => `
+      way["piste:type"="downhill"](${c.south},${c.west},${c.north},${c.east});
+      way["aerialway"](${c.south},${c.west},${c.north},${c.east});
   `).join('\n');
   const query = `
     [out:json][timeout:50];
@@ -131,21 +165,21 @@ async function fetchStatsForAreas(areas) {
   const data = await overpassRequest(query);
   const elements = data.elements || [];
 
-  function areaForPoint(pt) {
-    for (const a of areas) {
-      if (pt.lat >= a.south && pt.lat <= a.north && pt.lon >= a.west && pt.lon <= a.east) return a.name;
+  function candidateForPoint(pt) {
+    for (const c of candidates) {
+      if (pt.lat >= c.south && pt.lat <= c.north && pt.lon >= c.west && pt.lon <= c.east) return c.name;
     }
     return null;
   }
 
-  const byArea = {};
-  areas.forEach(a => { byArea[a.name] = { weightedDiffSum: 0, diffWeightTotal: 0, liftCount: 0, gondolaCount: 0 }; });
+  const byName = {};
+  candidates.forEach(c => { byName[c.name] = { weightedDiffSum: 0, diffWeightTotal: 0, liftCount: 0, gondolaCount: 0 }; });
 
   for (const el of elements) {
     if (el.type !== 'way' || !el.tags || !el.geometry || el.geometry.length === 0) continue;
-    const areaName = areaForPoint(el.geometry[0]);
-    if (!areaName) continue;
-    const bucket = byArea[areaName];
+    const name = candidateForPoint(el.geometry[0]);
+    if (!name) continue;
+    const bucket = byName[name];
 
     if (el.tags['piste:type'] === 'downhill') {
       const len = wayLengthMeters(el.geometry);
@@ -158,16 +192,15 @@ async function fetchStatsForAreas(areas) {
     }
   }
 
-  const withLifts = areas.map(a => {
-    const b = byArea[a.name];
+  return candidates.map(c => {
+    const b = byName[c.name];
     return {
-      name: a.name, lat: a.lat, lon: a.lon,
+      name: c.name, lat: c.lat, lon: c.lon,
+      rating: c.rating, ratingCount: c.ratingCount,
       difficultyAvg: b.diffWeightTotal > 0 ? Math.round((b.weightedDiffSum / b.diffWeightTotal) * 100) / 100 : null,
       liftCount: b.liftCount, gondolaCount: b.gondolaCount, vertical: null
     };
-  }).filter(r => r.liftCount > 0); // drop backcountry-only areas — no lift infrastructure tagged means it's not a lift-served resort
-
-  return withLifts;
+  }).filter(r => r.liftCount > 0); // drop candidates with no lift infrastructure found nearby
 }
 
 function assignSizeTiers(resorts) {
@@ -186,20 +219,20 @@ function assignSizeTiers(resorts) {
 
 module.exports = async (req, res) => {
   const regionKey = (req.query && req.query.region) || 'denver';
-  const regionBbox = REGIONS[regionKey] || REGIONS.denver;
+  const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const areas = await discoverResortAreas(regionBbox);
-    const results = await fetchStatsForAreas(areas);
+    const candidates = await discoverResortCandidates(bbox);
+    const results = await fetchStatsForCandidates(candidates);
     const tiered = assignSizeTiers(results);
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
-      discoveredAreaCount: areas.length,
-      droppedAsBackcountryOnly: areas.length - results.length,
+      candidatesFromPlaces: candidates.length,
+      droppedNoLiftsFound: candidates.length - results.length,
       resorts: tiered,
       failures: []
     });
   } catch (e) {
-    res.status(502).json({ error: 'Overpass request failed', detail: e.message, resorts: [], failures: [] });
+    res.status(502).json({ error: 'Request failed', detail: e.message, resorts: [], failures: [] });
   }
 };
