@@ -1,25 +1,26 @@
 // api/fetch-ski.js
 // Vercel serverless function — GET /api/fetch-ski?region=denver|norway|amsterdam
 //
-// v5 — STRIPPED BACK to Google Places only, no Overpass, no additional
-// filtering beyond dropping closed businesses. The v4 hybrid (Places
-// discovery + targeted Overpass stats) surfaced real problems in testing:
-// slow (two sequential API calls), a non-resort false positive (a ski shop)
-// getting through the includedType filter, and still missing some expected
-// resorts. Rather than debug all of that at once, this strips back to the
-// simplest working version — same shape as fetch-pinball.js/fetch-yarn.js —
-// so there's a known-good baseline to compare against.
-//
-// KNOWN TRADEOFF, accepted deliberately: no difficulty/lift/size-tier data
-// anymore, just name + rating + location. The Overpass stats logic isn't
-// deleted from project history — it's genuinely valuable and can come back
-// once the discovery layer itself is solid.
+// v6 — Fast layer. Google Places only, but with real filtering this time:
+// excludes by Google's own `types` classification (lodging, shops, natural
+// features like peaks) AND by name keywords for junk that doesn't get a
+// clearly bad type (e.g. a "Weather & Snow Report" listing). This is the
+// FAST call — api/fetch-ski-supplement.js is the slower Overpass layer that
+// runs after, adding real resorts this misses (confirmed miss: Loveland,
+// CO — a real, well-known resort that never showed up in Places results).
 
 const REGIONS = {
   denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
   norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 },
   amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
 };
+
+const EXCLUDED_TYPES = new Set([
+  'lodging', 'hotel', 'motel', 'hostel', 'resort_hotel', 'extended_stay_hotel',
+  'bed_and_breakfast', 'guest_house', 'inn', 'store', 'shopping_mall',
+  'sporting_goods_store', 'clothing_store', 'mountain_peak', 'natural_feature'
+]);
+const EXCLUDED_NAME_KEYWORDS = ['weather', 'snow report', 'forecast', 'shop', 'rental', 'outfitter', 'gear'];
 
 async function searchSkiResorts(bbox) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
@@ -76,8 +77,16 @@ function cleanPlace(p) {
     ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : 0,
     website: p.websiteUri || null,
     types: p.types || [],
-    businessStatus: p.businessStatus || 'OPERATIONAL'
+    businessStatus: p.businessStatus || 'OPERATIONAL',
+    source: 'places'
   };
+}
+
+function isJunk(p) {
+  if (p.types.some(t => EXCLUDED_TYPES.has(t))) return true;
+  const nameLower = p.name.toLowerCase();
+  if (EXCLUDED_NAME_KEYWORDS.some(kw => nameLower.includes(kw))) return true;
+  return false;
 }
 
 module.exports = async (req, res) => {
@@ -89,13 +98,15 @@ module.exports = async (req, res) => {
       .map(cleanPlace)
       .filter(p => p.lat !== null && p.lng !== null)
       .filter(p => p.businessStatus === 'OPERATIONAL')
+      .filter(p => !isJunk(p))
       .sort((a, b) => (b.rating || 0) - (a.rating || 0));
 
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
       bbox,
-      totalPulled: rawPlaces.length,
+      totalPulledBeforeFilter: rawPlaces.length,
+      droppedAsJunk: rawPlaces.length - cleaned.length,
       resorts: cleaned
     });
   } catch (e) {

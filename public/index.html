@@ -407,10 +407,50 @@
     historical: { endpoint: '/api/fetch-historical', apply: d => { historicalData = d; }, count: () => historicalData.historical.length }
   };
 
+  function metersBetween(a, b) {
+    const R = 6371000, toRad = d => d * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat), dLng = toRad(b.lng - a.lng);
+    const h = Math.sin(dLat/2)**2 + Math.cos(toRad(a.lat)) * Math.cos(toRad(b.lat)) * Math.sin(dLng/2)**2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+
   async function refreshOne(cat){
     const cfg = REFRESH_CONFIG[cat];
     const region = document.getElementById('regionSelect').value;
     const startedAt = performance.now();
+
+    // Ski runs two stages: a fast filtered Places call, then a slower
+    // Overpass supplement that adds real resorts Places' ski_resort
+    // category misses entirely (confirmed miss: Loveland, CO). Merged by
+    // proximity so the same resort found by both sources doesn't duplicate.
+    if(cat === 'ski'){
+      try{
+        const fastResp = await fetch(`/api/fetch-ski?region=${region}`);
+        const fastData = await fastResp.json();
+        let combined = fastData.resorts || [];
+
+        try{
+          const slowResp = await fetch(`/api/fetch-ski-supplement?region=${region}`);
+          const slowData = await slowResp.json();
+          const supplemental = slowData.resorts || [];
+          const DEDUPE_METERS = 2000;
+          supplemental.forEach(s=>{
+            const isDupe = combined.some(existing => metersBetween(existing, s) < DEDUPE_METERS);
+            if(!isDupe) combined.push(s);
+          });
+        }catch(e){
+          console.error('Overpass supplement failed, showing Places-only ski results', e);
+        }
+
+        skiData = { generatedAt: fastData.generatedAt, resorts: combined };
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        return { cat, ok:true, elapsedMs, count: combined.length, failCount:0 };
+      }catch(e){
+        const elapsedMs = Math.round(performance.now() - startedAt);
+        return { cat, ok:false, elapsedMs, error: e.message };
+      }
+    }
+
     try{
       const resp = await fetch(`${cfg.endpoint}?region=${region}`);
       const elapsedMs = Math.round(performance.now() - startedAt);
