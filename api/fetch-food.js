@@ -37,7 +37,7 @@ function countKeywordMatches(reviews) {
 const REGIONS = {
   denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
   norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 },
-  amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
+  amsterdam: { south: 52.2326, west: 4.6841, north: 52.5026, east: 5.1241 } // FIXED: was the wide multi-city Randstad box (Amsterdam+Utrecht+Rotterdam+The Hague combined) — diluted a real, prominent 4.8-rated bar (Cafe De Dokter, confirmed to exist in Google's data) out of the top 60 results by making it compete against every bar in 4 other major cities. Now Amsterdam-city-scale, matching the MTB/hiking pattern.
 };
 
 async function searchMeal(bbox, mealType) {
