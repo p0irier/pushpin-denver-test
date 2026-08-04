@@ -15,7 +15,8 @@
 // comparably to Denver's metro box.
 const REGIONS = {
   denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
-  norway: { south: 63.2805, west: 10.0951, north: 63.5805, east: 10.6951 }
+  norway: { south: 63.2805, west: 10.0951, north: 63.5805, east: 10.6951 },
+  amsterdam: { south: 52.2176, west: 4.7541, north: 52.5176, east: 5.0541 }
 };
 
 const SCALE_TO_IMBA_BUCKET = { 0: 0, 1: 1, 2: 2, 3: 3, 4: 3, 5: 4, 6: 4 };

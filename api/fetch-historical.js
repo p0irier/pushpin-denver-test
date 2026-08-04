@@ -22,7 +22,8 @@ const TYPES_TO_SEARCH = ['historical_landmark', 'cultural_landmark', 'monument',
 
 const REGIONS = {
   denver: { south: 39.30, west: -106.40, north: 39.95, east: -105.00 },
-  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 }
+  norway: { south: 62.30, west: 9.20, north: 63.70, east: 11.60 },
+  amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
 };
 
 async function searchByType(bbox, includedType) {
