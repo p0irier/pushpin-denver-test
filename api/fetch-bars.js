@@ -28,50 +28,76 @@ const REGIONS = {
   amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
 };
 
+// PAGINATION — bars/pubs ONLY, not other categories. Each Text Search page
+// is 20 results max; a generic "bar pub" query was found to miss small,
+// low-profile places (confirmed live: Cafe de Dokter in Amsterdam never
+// appeared in the top 20 at all). Pulling up to 3 pages (60 results) gives
+// real hidden-gem candidates more chance to survive before keyword scoring
+// even runs. Each page IS a separate billable call (3x calls for this
+// category specifically), but at personal-use volume this stays free —
+// nowhere near the 1,000/month allowance even with pagination.
+const MAX_PAGES = 3;
+
 async function searchBars(bbox) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
   if (!apiKey) {
     throw new Error('GOOGLE_PLACES_API_KEY environment variable is not set in Vercel project settings');
   }
 
-  const body = {
-    textQuery: 'bar pub',
-    maxResultCount: 20,
-    locationRestriction: {
-      rectangle: {
-        low: { latitude: bbox.south, longitude: bbox.west },
-        high: { latitude: bbox.north, longitude: bbox.east }
+  let allPlaces = [];
+  let pageToken = null;
+
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const body = {
+      textQuery: 'bar pub',
+      maxResultCount: 20,
+      locationRestriction: {
+        rectangle: {
+          low: { latitude: bbox.south, longitude: bbox.west },
+          high: { latitude: bbox.north, longitude: bbox.east }
+        }
       }
+    };
+    if (pageToken) body.pageToken = pageToken;
+
+    const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': [
+          'places.displayName',
+          'places.formattedAddress',
+          'places.location',
+          'places.rating',
+          'places.userRatingCount',
+          'places.types',
+          'places.websiteUri',
+          'places.nationalPhoneNumber',
+          'places.businessStatus',
+          'places.reviews',
+          'nextPageToken'
+        ].join(',')
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      throw new Error(`Google Places returned ${resp.status}: ${errText.slice(0, 300)}`);
     }
-  };
+    const data = await resp.json();
+    allPlaces.push(...(data.places || []));
 
-  const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-Goog-Api-Key': apiKey,
-      'X-Goog-FieldMask': [
-        'places.displayName',
-        'places.formattedAddress',
-        'places.location',
-        'places.rating',
-        'places.userRatingCount',
-        'places.types',
-        'places.websiteUri',
-        'places.nationalPhoneNumber',
-        'places.businessStatus',
-        'places.reviews'
-      ].join(',')
-    },
-    body: JSON.stringify(body)
-  });
-
-  if (!resp.ok) {
-    const errText = await resp.text().catch(() => '');
-    throw new Error(`Google Places returned ${resp.status}: ${errText.slice(0, 300)}`);
+    if (!data.nextPageToken) break; // no more pages available
+    pageToken = data.nextPageToken;
+    // Google's token needs a brief moment to activate — using it immediately
+    // can return INVALID_REQUEST. This delay is documented Google behavior,
+    // not a workaround for flakiness on our end.
+    await new Promise(r => setTimeout(r, 2000));
   }
-  const data = await resp.json();
-  return data.places || [];
+
+  return allPlaces;
 }
 
 function cleanPlace(p) {
