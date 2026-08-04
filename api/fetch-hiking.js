@@ -1,162 +1,104 @@
 // api/fetch-hiking.js
-// Vercel serverless function. Runs on Vercel's servers (not the browser, not
-// local Node) when the frontend calls GET /api/fetch-hiking.
+// Vercel serverless function — GET /api/fetch-hiking?region=denver|norway|amsterdam
 //
-// Same logic as scripts/fetch-hiking.js (named ways, grouped by name into one
-// point per trail, length filter, sac_scale as enrichment) — just wrapped as
-// an HTTP handler instead of a CLI script, and returning JSON directly to the
-// browser instead of writing a file.
+// v4 — SWITCHED from Overpass/OSM to Google Places, using the real
+// `hiking_area` type (Table A, "Entertainment and Recreation" category).
+// Modeled on fetch-pinball.js/fetch-yarn.js — no keyword scoring, no rating
+// filter, just find every hiking_area-tagged place and show it.
 //
-// No data is persisted/cached here yet — every click re-queries Overpass live.
-// That's fine for manual testing. If this becomes the real per-trip pattern,
-// add caching (Vercel KV/Blob) keyed by region before relying on it at scale.
+// TRADEOFF, decided deliberately: this drops the trail DISTANCE stat that
+// the Overpass version had (Places has no length/geometry field for a
+// hiking_area — it's a point location with a rating, not a measured trail).
+// In exchange: no more Overpass flakiness, no more T-junction/clustering
+// mess, no more segment-duplication problems. Reliability over precision.
+//
+// Reuses the same GOOGLE_PLACES_API_KEY already set up — no new setup.
 
-// FIXED: same bug as MTB — was reusing the wide ski-corridor bbox instead of
-// a dense-local-trail-system box. Now centered on Trondheim, metro-scale.
 const REGIONS = {
   denver: { south: 39.55, west: -105.35, north: 39.85, east: -105.05 },
   norway: { south: 63.2805, west: 10.0951, north: 63.5805, east: 10.6951 },
   amsterdam: { south: 52.2176, west: 4.7541, north: 52.5176, east: 5.0541 }
 };
-const MIN_TRAIL_MILES = 3;
 
-// REVERTED: private.coffee as primary caused all three Overpass-based
-// categories to time out at exactly 60s (Vercel's cap) in testing — strong
-// signal it was down/hanging at that moment, not just slower. Back to
-// overpass-api.de first (proven working tonight), private.coffee demoted to
-// a fallback rather than trusted as primary without real uptime monitoring.
-const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
-  'https://overpass.private.coffee/api/interpreter'
-];
+async function searchHiking(bbox) {
+  const apiKey = process.env.GOOGLE_PLACES_API_KEY;
+  if (!apiKey) {
+    throw new Error('GOOGLE_PLACES_API_KEY environment variable is not set in Vercel project settings');
+  }
 
-const SAC_SCALE_LABELS = {
-  hiking: 'T1 · Hiking',
-  mountain_hiking: 'T2 · Mountain hiking',
-  demanding_mountain_hiking: 'T3 · Demanding mountain hiking',
-  alpine_hiking: 'T4 · Alpine hiking',
-  demanding_alpine_hiking: 'T5 · Demanding alpine hiking',
-  difficult_alpine_hiking: 'T6 · Difficult alpine hiking'
-};
-
-async function overpassRequest(query) {
-  let lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const endpoint = OVERPASS_ENDPOINTS[attempt % OVERPASS_ENDPOINTS.length];
-    try {
-      const resp = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Accept': 'application/json',
-          'User-Agent': 'pushpin-denver-test/0.1 (personal trip-planner prototype)'
-        },
-        body: 'data=' + encodeURIComponent(query)
-      });
-      if (!resp.ok) throw new Error(`${resp.status} from ${endpoint}`);
-      return await resp.json();
-    } catch (e) {
-      lastErr = e;
-      // Shorter backoff than the local script since we're inside a function
-      // timeout budget here, not a patient CLI run.
-      const waitMs = 2000 * (attempt + 1);
-      await new Promise(res => setTimeout(res, waitMs));
+  const body = {
+    textQuery: 'hiking trail',
+    includedType: 'hiking_area',
+    maxResultCount: 20,
+    locationRestriction: {
+      rectangle: {
+        low: { latitude: bbox.south, longitude: bbox.west },
+        high: { latitude: bbox.north, longitude: bbox.east }
+      }
     }
+  };
+
+  const resp = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': apiKey,
+      'X-Goog-FieldMask': [
+        'places.displayName',
+        'places.formattedAddress',
+        'places.location',
+        'places.rating',
+        'places.userRatingCount',
+        'places.types',
+        'places.websiteUri',
+        'places.businessStatus',
+        'places.editorialSummary'
+      ].join(',')
+    },
+    body: JSON.stringify(body)
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => '');
+    throw new Error(`Google Places returned ${resp.status}: ${errText.slice(0, 300)}`);
   }
-  throw lastErr;
+  const data = await resp.json();
+  return data.places || [];
 }
 
-function haversineMeters(a, b) {
-  const R = 6371000;
-  const toRad = d => (d * Math.PI) / 180;
-  const dLat = toRad(b.lat - a.lat);
-  const dLon = toRad(b.lon - a.lon);
-  const lat1 = toRad(a.lat), lat2 = toRad(b.lat);
-  const h = Math.sin(dLat/2)**2 + Math.cos(lat1)*Math.cos(lat2)*Math.sin(dLon/2)**2;
-  return 2 * R * Math.asin(Math.sqrt(h));
-}
-
-function segmentLengthMiles(geometry) {
-  let meters = 0;
-  for (let i = 1; i < geometry.length; i++) {
-    meters += haversineMeters(geometry[i - 1], geometry[i]);
-  }
-  return meters / 1609.34;
-}
-
-async function fetchTrails(bbox) {
-  const bboxStr = `${bbox.south},${bbox.west},${bbox.north},${bbox.east}`;
-  const query = `
-    [out:json][timeout:50];
-    (
-      way["highway"="path"]["name"](${bboxStr});
-      way["highway"="footway"]["name"](${bboxStr});
-      way["highway"="track"]["name"]["foot"!="no"](${bboxStr});
-    );
-    out geom;
-  `;
-  const data = await overpassRequest(query);
-
-  const byName = {};
-  for (const el of data.elements || []) {
-    if (el.type !== 'way' || !el.tags || !el.tags.name || !el.geometry || el.geometry.length < 2) continue;
-    const name = el.tags.name;
-    if (!byName[name]) byName[name] = { segments: [], sacScale: null };
-    byName[name].segments.push(el.geometry);
-    if (!byName[name].sacScale && el.tags.sac_scale && SAC_SCALE_LABELS[el.tags.sac_scale]) {
-      byName[name].sacScale = SAC_SCALE_LABELS[el.tags.sac_scale];
-    }
-  }
-
-  const trails = [];
-  for (const [name, group] of Object.entries(byName)) {
-    const totalMiles = Math.round(
-      group.segments.reduce((sum, seg) => sum + segmentLengthMiles(seg), 0) * 100
-    ) / 100;
-    if (totalMiles < MIN_TRAIL_MILES) continue;
-    const point = group.segments[0][0];
-    trails.push({
-      name,
-      lat: point.lat,
-      lon: point.lon,
-      distanceMiles: totalMiles,
-      sacScale: group.sacScale,
-      segmentCount: group.segments.length,
-      description: group.sacScale
-        ? `Hiking trail, ${group.sacScale}, ${totalMiles} mi total`
-        : `Hiking trail, ${totalMiles} mi total`
-    });
-  }
-  return trails;
-}
-
-// Hiking is low-priority and has no quality signal (sac_scale too sparse to
-// rank on) — per direction, only surface the top 10% by distance, on the
-// theory that longer/more substantial trails are more likely to be worth
-// showing than a long tail of short named paths.
-function keepTop10PercentByDistance(trails) {
-  if (trails.length === 0) return trails;
-  const sorted = [...trails].sort((a, b) => b.distanceMiles - a.distanceMiles);
-  const keepCount = Math.max(1, Math.ceil(sorted.length * 0.1));
-  return sorted.slice(0, keepCount);
+function cleanPlace(p) {
+  return {
+    name: p.displayName ? p.displayName.text : 'Unknown',
+    address: p.formattedAddress || null,
+    lat: p.location ? p.location.latitude : null,
+    lng: p.location ? p.location.longitude : null,
+    rating: typeof p.rating === 'number' ? p.rating : null,
+    ratingCount: typeof p.userRatingCount === 'number' ? p.userRatingCount : 0,
+    website: p.websiteUri || null,
+    businessStatus: p.businessStatus || 'OPERATIONAL',
+    description: p.editorialSummary && p.editorialSummary.text ? p.editorialSummary.text : null
+  };
 }
 
 module.exports = async (req, res) => {
   const regionKey = (req.query && req.query.region) || 'denver';
   const bbox = REGIONS[regionKey] || REGIONS.denver;
   try {
-    const allTrails = await fetchTrails(bbox);
-    const trails = keepTop10PercentByDistance(allTrails);
+    const rawPlaces = await searchHiking(bbox);
+    const cleaned = rawPlaces
+      .map(cleanPlace)
+      .filter(p => p.lat !== null && p.lng !== null)
+      .filter(p => p.businessStatus === 'OPERATIONAL')
+      .sort((a, b) => (b.rating || 0) - (a.rating || 0));
+
     res.status(200).json({
       generatedAt: new Date().toISOString(),
       region: regionKey,
       bbox,
-      minTrailMiles: MIN_TRAIL_MILES,
-      totalFound: allTrails.length,
-      trails
+      totalPulled: rawPlaces.length,
+      trails: cleaned
     });
   } catch (e) {
-    res.status(502).json({ error: 'Overpass request failed', detail: e.message });
+    res.status(502).json({ error: 'Google Places request failed', detail: e.message });
   }
 };

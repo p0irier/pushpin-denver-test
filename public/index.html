@@ -239,13 +239,14 @@
   }
 
   function hikingCardHtml(t){
-    return `<div class="card" style="border-left-color:var(--hiking)" data-fly="${t.lat},${t.lon}">
+    const ratingText = t.rating !== null ? `⭐ ${t.rating} (${t.ratingCount})` : 'No rating yet';
+    const descText = t.description || t.address || 'No description on file';
+    return `<div class="card" style="border-left-color:var(--hiking)" data-fly="${t.lat},${t.lng}">
       <div class="name">🥾 ${t.name}</div>
       <div class="stat-row">
-        <span>${t.sacScale || 'Difficulty not tagged'}</span>
-        <span>${t.distanceMiles} mi</span>
+        <span>${ratingText}</span>
       </div>
-      <div class="desc">${t.description}</div>
+      <div class="desc">${descText}</div>
     </div>`;
   }
 
@@ -285,7 +286,7 @@
       else html += historicalData.historical.map(historicalCardHtml).join('');
     }
     if(activeCats.has('hiking')){
-      if(hikingData.trails.length===0) html += `<div class="empty-note">No hiking data yet — run <b>npm run fetch:hiking</b> locally and redeploy.</div>`;
+      if(hikingData.trails.length===0) html += `<div class="empty-note">No hiking data yet — click Refresh hiking.</div>`;
       else html += hikingData.trails.map(hikingCardHtml).join('');
     }
     cardList.innerHTML = html || `<div class="empty-note">No categories selected.</div>`;
@@ -369,9 +370,9 @@
     if(activeCats.has('hiking')){
       hikingData.trails.forEach(t=>{
         const icon = L.divIcon({className:'',html:`<div style="width:14px;height:14px;border-radius:50%;background:var(--hiking);border:2px solid #fdfbf4;box-shadow:0 1px 3px rgba(0,0,0,0.4);"></div>`,iconSize:[14,14],iconAnchor:[7,7]});
-        const m = L.marker([t.lat,t.lon],{icon}).addTo(hikingLayer);
-        m.bindPopup(`<b>🥾 ${t.name}</b><br>${t.sacScale || 'Difficulty not tagged'} · ${t.distanceMiles} mi`);
-        bounds.push([t.lat,t.lon]);
+        const m = L.marker([t.lat,t.lng],{icon}).addTo(hikingLayer);
+        m.bindPopup(`<b>🥾 ${t.name}</b><br>${t.description || (t.rating !== null ? `⭐ ${t.rating} (${t.ratingCount} reviews)` : 'No rating yet')}`);
+        bounds.push([t.lat,t.lng]);
       });
     }
     if(bounds.length) map.fitBounds(L.latLngBounds(bounds), {padding:[40,40]});
