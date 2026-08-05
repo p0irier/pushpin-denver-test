@@ -15,12 +15,16 @@ const REGIONS = {
   amsterdam: { south: 52.0426, west: 4.2041, north: 52.6926, east: 5.6041 }
 };
 
-const EXCLUDED_TYPES = new Set([
-  'lodging', 'hotel', 'motel', 'hostel', 'resort_hotel', 'extended_stay_hotel',
-  'bed_and_breakfast', 'guest_house', 'inn', 'store', 'shopping_mall',
-  'sporting_goods_store', 'clothing_store', 'mountain_peak', 'natural_feature'
-]);
-const EXCLUDED_NAME_KEYWORDS = ['weather', 'snow report', 'forecast', 'shop', 'rental', 'outfitter', 'gear'];
+// FIXED: the original list included lodging/hotel/store types, which
+// wrongly excluded Breckenridge — confirmed live: its own `types` array is
+// ["ski_resort", "tourist_attraction", "resort_hotel", "hotel",
+// "sports_activity_location", "lodging", ...]. Large resorts legitimately
+// operate on-site hotels, so lodging/hotel coexisting with ski_resort is
+// NORMAL, not a red flag. Only mountain_peak/natural_feature are safe to
+// exclude — a real geographic peak would never also carry a legitimate
+// resort-business type.
+const EXCLUDED_TYPES = new Set(['mountain_peak', 'natural_feature']);
+const EXCLUDED_NAME_KEYWORDS = ['weather', 'snow report', 'forecast', 'shop', 'rental', 'outfitter', 'gear', 'start house'];
 
 async function searchSkiResorts(bbox) {
   const apiKey = process.env.GOOGLE_PLACES_API_KEY;
